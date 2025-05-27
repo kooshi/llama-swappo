@@ -77,6 +77,7 @@ func TestConfig_FindConfig(t *testing.T) {
 				Aliases:       []string{"m1", "model-one"},
 				Env:           []string{"VAR1=value1", "VAR2=value2"},
 				CheckEndpoint: "/health",
+				Metadata:      MetadataConfig{},
 			},
 			"model2": {
 				Cmd:           "python model2.py",
@@ -84,6 +85,7 @@ func TestConfig_FindConfig(t *testing.T) {
 				Aliases:       []string{"m2", "model-two"},
 				Env:           []string{"VAR3=value3", "VAR4=value4"},
 				CheckEndpoint: "/status",
+				Metadata:      MetadataConfig{},
 			},
 		},
 		HealthCheckTimeout: 10,
