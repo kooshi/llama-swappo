@@ -23,7 +23,7 @@ const (
 )
 
 type ProxyManager struct {
-	sync.Mutex
+	sync.RWMutex
 
 	config    Config
 	ginEngine *gin.Engine
@@ -95,6 +95,7 @@ func New(config Config) *ProxyManager {
 	}
 
 	pm.setupGinEngine()
+	pm.RegisterOllamaRoutes()
 	return pm
 }
 
@@ -234,6 +235,33 @@ func (pm *ProxyManager) setupGinEngine() {
 	gin.DisableConsoleColor()
 }
 
+// RegisterOllamaRoutes sets up the Ollama-compatible API endpoints.
+func (pm *ProxyManager) RegisterOllamaRoutes() {
+	// General Ollama API
+	pm.ginEngine.HEAD("/", pm.ollamaHeartbeatHandler) //HEAD '/' does not conflict with llama-swap's GET '/'
+	pm.ginEngine.GET("/api/version", pm.ollamaVersionHandler())
+	pm.ginEngine.HEAD("/api/version", pm.ollamaVersionHandler())
+
+	// Model management
+	pm.ginEngine.GET("/api/tags", pm.ollamaListTagsHandler())
+	pm.ginEngine.POST("/api/show", pm.ollamaShowHandler())
+	pm.ginEngine.GET("/api/ps", pm.ollamaPSHandler())
+
+	// Inference
+	pm.ginEngine.POST("/api/generate", pm.ollamaGenerateHandler())
+	pm.ginEngine.POST("/api/chat", pm.ollamaChatHandler())
+
+	// Stubbed endpoints
+	stubbedPostRoutes := []string{
+		"/api/pull", "/api/push", "/api/copy",
+		"/api/create", "/api/delete", "/api/embeddings",
+	}
+	for _, route := range stubbedPostRoutes {
+		pm.ginEngine.POST(route, pm.ollamaNotImplementedHandler)
+	}
+	pm.ginEngine.POST("/api/blobs/:digest", pm.ollamaNotImplementedHandler)
+}
+
 // ServeHTTP implements http.Handler interface
 func (pm *ProxyManager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	pm.ginEngine.ServeHTTP(w, r)
@@ -364,7 +392,15 @@ func (pm *ProxyManager) proxyToUpstream(c *gin.Context) {
 func (pm *ProxyManager) proxyOAIHandler(c *gin.Context) {
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		pm.sendErrorResponse(c, http.StatusBadRequest, "could not ready request body")
+		pm.sendErrorResponse(c, http.StatusBadRequest, "could not read request body")
+		return
+	}
+
+	// Some clients (Copilot) omit parameters in function definitions instead of sending empty ones
+	// llama-server is strict about the schema. This ensures compliance.
+	bodyBytes, err = ensureOpenAIToolParameters(bodyBytes, pm.proxyLogger)
+	if err != nil {
+		pm.sendErrorResponse(c, http.StatusInternalServerError, fmt.Sprintf("error processing tools in request: %s", err.Error()))
 		return
 	}
 
@@ -423,6 +459,57 @@ func (pm *ProxyManager) proxyOAIHandler(c *gin.Context) {
 		pm.proxyLogger.Errorf("Error Proxying Request for processGroup %s and model %s", processGroup.id, realModelName)
 		return
 	}
+}
+
+// ensureOpenAIToolParameters checks the request body for OpenAI tools
+// and adds a default empty parameters object if a function tool is missing it.
+func ensureOpenAIToolParameters(bodyBytes []byte, proxyLogger *LogMonitor) ([]byte, error) {
+	toolsResult := gjson.GetBytes(bodyBytes, "tools")
+
+	if !toolsResult.Exists() || !toolsResult.IsArray() {
+		return bodyBytes, nil
+	}
+
+	currentBodyBytes := bodyBytes
+	madeChanges := false
+
+	for i, tool := range toolsResult.Array() {
+		if tool.Get("type").String() == "function" {
+			// Check if 'function' object exists and 'parameters' is missing within it
+			functionPath := fmt.Sprintf("tools.%d.function", i)
+			functionResult := gjson.GetBytes(currentBodyBytes, functionPath)
+
+			if functionResult.Exists() && functionResult.IsObject() {
+				parametersPath := functionPath + ".parameters"
+				if !gjson.GetBytes(currentBodyBytes, parametersPath).Exists() {
+					defaultParameters := map[string]interface{}{
+						"type":       "object",
+						"properties": map[string]interface{}{},
+					}
+
+					newBodyBytes, err := sjson.SetBytes(currentBodyBytes, parametersPath, defaultParameters)
+					if err != nil {
+						return nil, fmt.Errorf("failed to set default parameters for tool %d using sjson: %w", i, err)
+					}
+					currentBodyBytes = newBodyBytes
+					madeChanges = true
+
+					if proxyLogger != nil {
+						funcName := functionResult.Get("name").String()
+						if funcName == "" {
+							funcName = fmt.Sprintf("tool at index %d", i)
+						}
+						proxyLogger.Debugf("OpenAI Proxy: Added default parameters to tool function '%s' in request body using sjson", funcName)
+					}
+				}
+			}
+		}
+	}
+
+	if madeChanges {
+		return currentBodyBytes, nil
+	}
+	return bodyBytes, nil // Return original if no changes
 }
 
 func (pm *ProxyManager) proxyOAIPostFormHandler(c *gin.Context) {
@@ -538,7 +625,7 @@ func (pm *ProxyManager) proxyOAIPostFormHandler(c *gin.Context) {
 func (pm *ProxyManager) sendErrorResponse(c *gin.Context, statusCode int, message string) {
 	acceptHeader := c.GetHeader("Accept")
 
-	if strings.Contains(acceptHeader, "application/json") {
+	if strings.Contains(acceptHeader, "application/json") || strings.Contains(acceptHeader, "application/x-ndjson") {
 		c.JSON(statusCode, gin.H{"error": message})
 	} else {
 		c.String(statusCode, message)
