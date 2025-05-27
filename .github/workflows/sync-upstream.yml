@@ -1,0 +1,150 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC - adjust as needed
+    - cron: '0 2 * * *'
+  workflow_dispatch: # Allows manual triggering
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/mostlygeek/llama-swap.git || true
+          git fetch upstream
+
+      - name: Update upstream-main branch
+        run: |
+          git checkout -B upstream-main upstream/main
+          git push origin upstream-main --force
+
+      - name: Attempt rebase onto upstream
+        id: rebase
+        run: |
+          git checkout main
+          git pull origin main
+          
+          # Check if there are any new upstream changes
+          UPSTREAM_COMMIT=$(git rev-parse upstream-main)
+          CURRENT_BASE=$(git merge-base main upstream-main)
+          
+          if [ "$UPSTREAM_COMMIT" = "$CURRENT_BASE" ]; then
+            echo "rebase_result=no_changes" >> $GITHUB_OUTPUT
+            echo "No new changes from upstream"
+          else
+            # Try to rebase main onto upstream-main
+            if git rebase upstream-main; then
+              git push origin main --force-with-lease
+              echo "rebase_result=success" >> $GITHUB_OUTPUT
+              echo "Successfully rebased onto upstream changes"
+            else
+              # Rebase failed due to conflicts
+              git rebase --abort
+              echo "rebase_result=conflict" >> $GITHUB_OUTPUT
+              echo "Rebase conflicts detected"
+            fi
+          fi
+
+      - name: Create issue on conflict
+        if: steps.rebase.outputs.rebase_result == 'conflict'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: ['upstream-sync-conflict'],
+              state: 'open'
+            });
+            
+            if (issues.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: '🚨 Upstream Sync Conflict Detected',
+                body: |
+                  ## Rebase Conflict Detected
+                  
+                  The automated upstream sync has detected rebase conflicts that require manual resolution.
+
+                  **What happened:**
+                  - Upstream changes were fetched successfully
+                  - The `upstream-main` branch has been updated
+                  - Attempting to rebase `main` onto `upstream-main` resulted in conflicts
+
+                  **Next steps:**
+                  1. Pull the latest changes: `git pull origin main`
+                  2. Start the rebase: `git rebase upstream-main`
+                  3. Resolve the conflicts manually in each conflicted file
+                  4. Stage the resolved files: `git add .`
+                  5. Continue the rebase: `git rebase --continue`
+                  6. Push the rebased branch: `git push origin main --force-with-lease`
+                  7. Close this issue
+
+                  **Branches:**
+                  - `main`: Your current branch with custom changes
+                  - `upstream-main`: Latest changes from upstream llama-swap
+
+                  This issue will auto-close when the next successful sync completes.
+                labels: ['upstream-sync-conflict', 'needs-attention']
+              });
+            }
+
+      - name: Close conflict issues on success
+        if: steps.rebase.outputs.rebase_result == 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: ['upstream-sync-conflict'],
+              state: 'open'
+            });
+            
+            for (const issue of issues) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: '✅ Upstream sync successful! Conflicts have been resolved. Closing this issue.'
+              });
+              
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed'
+              });
+            }
+
+      - name: Summary
+        run: |
+          echo "## Sync Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- Upstream remote: ✅ Updated" >> $GITHUB_STEP_SUMMARY
+          echo "- upstream-main branch: ✅ Updated" >> $GITHUB_STEP_SUMMARY
+          
+          case "${{ steps.rebase.outputs.rebase_result }}" in
+            "success")
+              echo "- Rebase to main: ✅ Success" >> $GITHUB_STEP_SUMMARY
+              ;;
+            "no_changes")
+              echo "- Rebase to main: ℹ️ No new changes" >> $GITHUB_STEP_SUMMARY
+              ;;
+            "conflict")
+              echo "- Rebase to main: ⚠️ Conflicts detected - manual intervention required" >> $GITHUB_STEP_SUMMARY
+              ;;
+          esac
