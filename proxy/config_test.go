@@ -32,6 +32,9 @@ models:
       - "VAR1=value1"
       - "VAR2=value2"
     checkEndpoint: "/health"
+    metadata:
+      architecture: "test-arch"
+      contextLength: 2048
   model2:
     cmd: ${svr-path} --arg1 one
     proxy: "http://localhost:8081"
@@ -88,6 +91,10 @@ groups:
 				Aliases:       []string{"m1", "model-one"},
 				Env:           []string{"VAR1=value1", "VAR2=value2"},
 				CheckEndpoint: "/health",
+				Metadata: MetadataConfig{
+					Architecture:  "test-arch",
+					ContextLength: 2048,
+				},
 			},
 			"model2": {
 				Cmd:           "path/to/server --arg1 one",
@@ -95,6 +102,7 @@ groups:
 				Aliases:       []string{"m2"},
 				Env:           nil,
 				CheckEndpoint: "/",
+				Metadata:      MetadataConfig{},
 			},
 			"model3": {
 				Cmd:           "path/to/cmd --arg1 one",
@@ -102,11 +110,13 @@ groups:
 				Aliases:       []string{"mthree"},
 				Env:           nil,
 				CheckEndpoint: "/",
+				Metadata:      MetadataConfig{},
 			},
 			"model4": {
 				Cmd:           "path/to/cmd --arg1 one",
 				Proxy:         "http://localhost:8082",
 				CheckEndpoint: "/",
+				Metadata:      MetadataConfig{},
 			},
 		},
 		HealthCheckTimeout: 15,
@@ -227,6 +237,7 @@ func TestConfig_FindConfig(t *testing.T) {
 				Aliases:       []string{"m1", "model-one"},
 				Env:           []string{"VAR1=value1", "VAR2=value2"},
 				CheckEndpoint: "/health",
+				Metadata:      MetadataConfig{},
 			},
 			"model2": {
 				Cmd:           "python model2.py",
@@ -234,6 +245,7 @@ func TestConfig_FindConfig(t *testing.T) {
 				Aliases:       []string{"m2", "model-two"},
 				Env:           []string{"VAR3=value3", "VAR4=value4"},
 				CheckEndpoint: "/status",
+				Metadata:      MetadataConfig{},
 			},
 		},
 		HealthCheckTimeout: 10,
