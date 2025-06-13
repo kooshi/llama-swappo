@@ -579,6 +579,213 @@ func (pm *ProxyManager) ollamaGenerateHandler() gin.HandlerFunc {
 	}
 }
 
+func (pm *ProxyManager) ollamaEmbedHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req OllamaEmbedRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			pm.sendOllamaError(c, http.StatusBadRequest, fmt.Sprintf("Invalid request: %v", err))
+			return
+		}
+		if req.Model == "" {
+			pm.sendOllamaError(c, http.StatusBadRequest, "Model name is required.")
+			return
+		}
+
+		pg, realModelName, err := pm.swapProcessGroup(req.Model)
+		if err != nil {
+			pm.sendOllamaError(c, http.StatusInternalServerError, fmt.Sprintf("Error selecting model process: %v", err))
+			return
+		}
+		process, ok := pg.processes[realModelName]
+		if !ok {
+			pm.sendOllamaError(c, http.StatusInternalServerError, fmt.Sprintf("Process for model %s not found in group %s", realModelName, pg.id))
+			return
+		}
+
+		modelNameToUse := realModelName
+		if pm.config.Models[realModelName].UseModelName != "" {
+			modelNameToUse = pm.config.Models[realModelName].UseModelName
+		}
+
+		// Prepare OpenAI embeddings request
+		openAIReq := map[string]interface{}{
+			"model": modelNameToUse,
+		}
+		switch v := req.Input.(type) {
+		case string:
+			openAIReq["input"] = v
+		case []interface{}:
+			openAIReq["input"] = v
+		default:
+			openAIReq["input"] = req.Input
+		}
+		if req.Options != nil {
+			for k, v := range req.Options {
+				openAIReq[k] = v
+			}
+		}
+
+		openAIReqBody, err := json.Marshal(openAIReq)
+		if err != nil {
+			pm.sendOllamaError(c, http.StatusInternalServerError, fmt.Sprintf("Error marshaling OpenAI request: %v", err))
+			return
+		}
+
+		proxyDestReq, err := http.NewRequestWithContext(c.Request.Context(), "POST", "/v1/embeddings", bytes.NewBuffer(openAIReqBody))
+		if err != nil {
+			pm.sendOllamaError(c, http.StatusInternalServerError, fmt.Sprintf("Error creating internal request: %v", err))
+			return
+		}
+		
+		proxyDestReq.Header.Set("Content-Type", "application/json")
+		proxyDestReq.Header.Set("Accept", "application/json")
+
+		// Remove Transfer-Encoding header if present - llamafile --v2 complains
+		proxyDestReq.Header.Set("content-length", fmt.Sprintf("%d", len(openAIReqBody)))
+		
+		recorder := httptest.NewRecorder()
+		process.ProxyRequest(recorder, proxyDestReq)
+
+		if recorder.Code != http.StatusOK {
+			var openAIError struct {
+				Error struct {
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if json.Unmarshal(recorder.Body.Bytes(), &openAIError) == nil && openAIError.Error.Message != "" {
+				pm.sendOllamaError(c, recorder.Code, openAIError.Error.Message)
+			} else {
+				pm.sendOllamaError(c, recorder.Code, fmt.Sprintf("Upstream error: %s", recorder.Body.String()))
+			}
+			return
+		}
+
+		// Parse OpenAI response and transform to Ollama format
+		var openAIResp struct {
+			Object     string `json:"object"`
+			Model      string `json:"model"`
+			Data       []struct {
+				Embedding []float32 `json:"embedding"`
+			} `json:"data"`
+			Usage struct {
+				PromptTokens int `json:"prompt_tokens"`
+			} `json:"usage"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &openAIResp); err != nil {
+			pm.sendOllamaError(c, http.StatusInternalServerError, fmt.Sprintf("Error parsing OpenAI response: %v. Body: %s", err, recorder.Body.String()))
+			return
+		}
+
+		embeddings := make([][]float32, len(openAIResp.Data))
+		for i, d := range openAIResp.Data {
+			embeddings[i] = d.Embedding
+		}
+
+		resp := OllamaEmbedResponse{
+			Model:           req.Model,
+			Embeddings:      embeddings,
+			PromptEvalCount: openAIResp.Usage.PromptTokens,
+		}
+		c.JSON(http.StatusOK, resp)
+	}
+}
+
+func (pm *ProxyManager) ollamaLegacyEmbeddingsHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req OllamaLegacyEmbeddingsRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			pm.sendOllamaError(c, http.StatusBadRequest, fmt.Sprintf("Invalid request: %v", err))
+			return
+		}
+		if req.Model == "" {
+			pm.sendOllamaError(c, http.StatusBadRequest, "Model name is required.")
+			return
+		}
+		if req.Prompt == "" {
+			pm.sendOllamaError(c, http.StatusBadRequest, "Prompt is required.")
+			return
+		}
+
+		pg, realModelName, err := pm.swapProcessGroup(req.Model)
+		if err != nil {
+			pm.sendOllamaError(c, http.StatusInternalServerError, fmt.Sprintf("Error selecting model process: %v", err))
+			return
+		}
+		process, ok := pg.processes[realModelName]
+		if !ok {
+			pm.sendOllamaError(c, http.StatusInternalServerError, fmt.Sprintf("Process for model %s not found in group %s", realModelName, pg.id))
+			return
+		}
+
+		modelNameToUse := realModelName
+		if pm.config.Models[realModelName].UseModelName != "" {
+			modelNameToUse = pm.config.Models[realModelName].UseModelName
+		}
+
+		// Prepare OpenAI embeddings request
+		openAIReq := map[string]interface{}{
+			"model": modelNameToUse,
+			"input": req.Prompt,
+		}
+		if req.Options != nil {
+			for k, v := range req.Options {
+				openAIReq[k] = v
+			}
+		}
+
+		openAIReqBody, err := json.Marshal(openAIReq)
+		if err != nil {
+			pm.sendOllamaError(c, http.StatusInternalServerError, fmt.Sprintf("Error marshaling OpenAI request: %v", err))
+			return
+		}
+
+		proxyDestReq, err := http.NewRequestWithContext(c.Request.Context(), "POST", "/v1/embeddings", bytes.NewBuffer(openAIReqBody))
+		if err != nil {
+			pm.sendOllamaError(c, http.StatusInternalServerError, fmt.Sprintf("Error creating internal request: %v", err))
+			return
+		}
+		proxyDestReq.Header.Set("Content-Type", "application/json")
+		proxyDestReq.Header.Set("Accept", "application/json")
+
+		recorder := httptest.NewRecorder()
+		process.ProxyRequest(recorder, proxyDestReq)
+
+		if recorder.Code != http.StatusOK {
+			var openAIError struct {
+				Error struct {
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if json.Unmarshal(recorder.Body.Bytes(), &openAIError) == nil && openAIError.Error.Message != "" {
+				pm.sendOllamaError(c, recorder.Code, openAIError.Error.Message)
+			} else {
+				pm.sendOllamaError(c, recorder.Code, fmt.Sprintf("Upstream error: %s", recorder.Body.String()))
+			}
+			return
+		}
+
+		// Parse OpenAI response and transform to Ollama legacy format
+		var openAIResp struct {
+			Data []struct {
+				Embedding []float32 `json:"embedding"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &openAIResp); err != nil {
+			pm.sendOllamaError(c, http.StatusInternalServerError, fmt.Sprintf("Error parsing OpenAI response: %v. Body: %s", err, recorder.Body.String()))
+			return
+		}
+		if len(openAIResp.Data) == 0 {
+			pm.sendOllamaError(c, http.StatusInternalServerError, "OpenAI response contained no embeddings.")
+			return
+		}
+
+		resp := OllamaLegacyEmbeddingsResponse{
+			Embedding: openAIResp.Data[0].Embedding,
+		}
+		c.JSON(http.StatusOK, resp)
+	}
+}
+
 // OllamaErrorResponse is the standard error format for Ollama API.
 type OllamaErrorResponse struct {
 	Error string `json:"error"`
@@ -719,6 +926,37 @@ type OllamaProcessModelResponse struct {
 	Details   OllamaModelDetails `json:"details"`
 	ExpiresAt time.Time          `json:"expires_at"`
 	SizeVRAM  int64              `json:"size_vram"`
+}
+
+// OllamaEmbedRequest describes a request to /api/embed.
+type OllamaEmbedRequest struct {
+	Model     string                 `json:"model"`
+	Input     interface{}            `json:"input"` // string or []string
+	Truncate  *bool                  `json:"truncate,omitempty"`
+	Options   map[string]interface{} `json:"options,omitempty"`
+	KeepAlive string                 `json:"keep_alive,omitempty"`
+}
+
+// OllamaEmbedResponse is the response from /api/embed.
+type OllamaEmbedResponse struct {
+	Model           string        `json:"model"`
+	Embeddings      [][]float32   `json:"embeddings"`
+	TotalDuration   int64         `json:"total_duration,omitempty"`
+	LoadDuration    int64         `json:"load_duration,omitempty"`
+	PromptEvalCount int           `json:"prompt_eval_count,omitempty"`
+}
+
+// OllamaLegacyEmbeddingsRequest describes a request to /api/embeddings.
+type OllamaLegacyEmbeddingsRequest struct {
+	Model     string                 `json:"model"`
+	Prompt    string                 `json:"prompt"`
+	Options   map[string]interface{} `json:"options,omitempty"`
+	KeepAlive string                 `json:"keep_alive,omitempty"`
+}
+
+// OllamaLegacyEmbeddingsResponse is the response from /api/embeddings.
+type OllamaLegacyEmbeddingsResponse struct {
+	Embedding []float32 `json:"embedding"`
 }
 
 // --- Helper types for transforming OpenAI stream to Ollama stream ---
