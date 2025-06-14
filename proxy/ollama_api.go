@@ -705,6 +705,14 @@ func (pm *ProxyManager) ollamaEmbedHandler() gin.HandlerFunc {
 			Embeddings:      embeddings,
 			PromptEvalCount: openAIResp.Usage.PromptTokens,
 		}
+
+		// clone the headers from the recorder - fixes CORS and other headers
+		for key, values := range recorder.Header() {
+			for _, value := range values {
+				c.Header(key, value)
+			}
+		}
+
 		c.JSON(http.StatusOK, resp)
 	}
 }
@@ -801,6 +809,14 @@ func (pm *ProxyManager) ollamaLegacyEmbeddingsHandler() gin.HandlerFunc {
 		resp := OllamaLegacyEmbeddingsResponse{
 			Embedding: openAIResp.Data[0].Embedding,
 		}
+
+		// clone the headers from the recorder - fixes CORS and other headers
+		for key, values := range recorder.Header() {
+			for _, value := range values {
+				c.Header(key, value)
+			}
+		}
+
 		c.JSON(http.StatusOK, resp)
 	}
 }
