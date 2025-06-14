@@ -370,9 +370,15 @@ func (trw *transformingResponseWriter) Flush() {
 		fmt.Fprintf(trw.ginWriter, "{\"error\":\"Error scanning stream buffer: %v\"}\n", err)
 	}
 
-	unprocessedSuffix = trw.buffer.Bytes()[trw.buffer.Len()-len(scanner.Bytes()):]
+	// If there is any unprocessed suffix, write it back to the buffer
+	unprocessedSuffix = nil
+	if trw.buffer.Len() > 0 && len(scanner.Bytes()) > 0 && trw.buffer.Len() >= len(scanner.Bytes()) {
+		unprocessedSuffix = trw.buffer.Bytes()[trw.buffer.Len()-len(scanner.Bytes()):]
+	}
 	trw.buffer.Reset()
-	trw.buffer.Write(unprocessedSuffix)
+	if unprocessedSuffix != nil {
+		trw.buffer.Write(unprocessedSuffix)
+	}
 
 	if processedBuffer.Len() > 0 {
 		trw.ginWriter.Write(processedBuffer.Bytes())
