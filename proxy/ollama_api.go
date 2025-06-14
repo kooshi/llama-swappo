@@ -488,6 +488,14 @@ func (pm *ProxyManager) ollamaChatHandler() gin.HandlerFunc {
 				PromptEvalCount: openAIResp.Usage.PromptTokens,
 				EvalCount:       openAIResp.Usage.CompletionTokens,
 			}
+
+			// CORS handling (avoid duplicate header)
+			if origin := c.Request.Header.Get("Origin"); origin != "" {
+				if _, exists := c.Writer.Header()["Access-Control-Allow-Origin"]; !exists {
+					c.Header("Access-Control-Allow-Origin", origin)
+				}
+			}
+
 			c.JSON(http.StatusOK, ollamaFinalResp)
 		}
 	}
@@ -599,6 +607,14 @@ func (pm *ProxyManager) ollamaGenerateHandler() gin.HandlerFunc {
 				PromptEvalCount: openAIResp.Usage.PromptTokens,
 				EvalCount:       openAIResp.Usage.CompletionTokens,
 			}
+
+			// CORS handling (avoid duplicate header)
+			if origin := c.Request.Header.Get("Origin"); origin != "" {
+				if _, exists := c.Writer.Header()["Access-Control-Allow-Origin"]; !exists {
+					c.Header("Access-Control-Allow-Origin", origin)
+				}
+			}
+
 			c.JSON(http.StatusOK, ollamaFinalResp)
 		}
 	}
@@ -711,11 +727,11 @@ func (pm *ProxyManager) ollamaEmbedHandler() gin.HandlerFunc {
 			Embeddings:      embeddings,
 			PromptEvalCount: openAIResp.Usage.PromptTokens,
 		}
-
-		// clone the headers from the recorder - fixes CORS and other headers
-		for key, values := range recorder.Header() {
-			for _, value := range values {
-				c.Header(key, value)
+		
+		// CORS handling
+		if origin := c.Request.Header.Get("Origin"); origin != "" {
+			if _, exists := c.Writer.Header()["Access-Control-Allow-Origin"]; !exists {
+				c.Header("Access-Control-Allow-Origin", origin)
 			}
 		}
 
@@ -816,10 +832,10 @@ func (pm *ProxyManager) ollamaLegacyEmbeddingsHandler() gin.HandlerFunc {
 			Embedding: openAIResp.Data[0].Embedding,
 		}
 
-		// clone the headers from the recorder - fixes CORS and other headers
-		for key, values := range recorder.Header() {
-			for _, value := range values {
-				c.Header(key, value)
+		// CORS handling
+		if origin := c.Request.Header.Get("Origin"); origin != "" {
+			if _, exists := c.Writer.Header()["Access-Control-Allow-Origin"]; !exists {
+				c.Header("Access-Control-Allow-Origin", origin)
 			}
 		}
 
