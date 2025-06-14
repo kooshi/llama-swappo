@@ -23,6 +23,10 @@ func (pm *ProxyManager) ollamaNotImplementedHandler(c *gin.Context) {
 
 func (pm *ProxyManager) ollamaVersionHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Handle CORS if Origin header is present
+		if origin := c.Request.Header.Get("Origin"); origin != "" {
+			c.Header("Access-Control-Allow-Origin", origin)
+		}
 		c.JSON(http.StatusOK, OllamaVersionResponse{Version: "0.0.0"})
 	}
 }
@@ -78,6 +82,11 @@ func (pm *ProxyManager) ollamaListTagsHandler() gin.HandlerFunc {
 			})
 		}
 		pm.RUnlock()
+
+		// Handle CORS if Origin header is present
+		if origin := c.Request.Header.Get("Origin"); origin != "" {
+			c.Header("Access-Control-Allow-Origin", origin)
+		}
 
 		c.JSON(http.StatusOK, OllamaListTagsResponse{Models: models})
 	}
@@ -168,6 +177,11 @@ func (pm *ProxyManager) ollamaShowHandler() gin.HandlerFunc {
 			Capabilities: caps,
 		}
 
+		// Handle CORS if Origin header is present
+		if origin := c.Request.Header.Get("Origin"); origin != "" {
+			c.Header("Access-Control-Allow-Origin", origin)
+		}
+
 		c.JSON(http.StatusOK, resp)
 	}
 }
@@ -235,6 +249,11 @@ func (pm *ProxyManager) ollamaPSHandler() gin.HandlerFunc {
 			group.Unlock()
 		}
 		pm.RUnlock()
+
+		// Handle CORS if Origin header is present
+		if origin := c.Request.Header.Get("Origin"); origin != "" {
+			c.Header("Access-Control-Allow-Origin", origin)
+		}
 
 		c.JSON(http.StatusOK, OllamaProcessResponse{Models: runningModels})
 	}
