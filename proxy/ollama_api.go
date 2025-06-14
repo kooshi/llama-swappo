@@ -687,6 +687,13 @@ func (pm *ProxyManager) ollamaEmbedHandler() gin.HandlerFunc {
 		recorder := httptest.NewRecorder()
 		process.ProxyRequest(recorder, proxyDestReq)
 
+		// CORS handling
+		if origin := c.Request.Header.Get("Origin"); origin != "" {
+			if _, exists := c.Writer.Header()["Access-Control-Allow-Origin"]; !exists {
+				c.Header("Access-Control-Allow-Origin", origin)
+			}
+		}
+
 		if recorder.Code != http.StatusOK {
 			var openAIError struct {
 				Error struct {
@@ -726,13 +733,6 @@ func (pm *ProxyManager) ollamaEmbedHandler() gin.HandlerFunc {
 			Model:           req.Model,
 			Embeddings:      embeddings,
 			PromptEvalCount: openAIResp.Usage.PromptTokens,
-		}
-		
-		// CORS handling
-		if origin := c.Request.Header.Get("Origin"); origin != "" {
-			if _, exists := c.Writer.Header()["Access-Control-Allow-Origin"]; !exists {
-				c.Header("Access-Control-Allow-Origin", origin)
-			}
 		}
 
 		c.JSON(http.StatusOK, resp)
@@ -799,6 +799,13 @@ func (pm *ProxyManager) ollamaLegacyEmbeddingsHandler() gin.HandlerFunc {
 		recorder := httptest.NewRecorder()
 		process.ProxyRequest(recorder, proxyDestReq)
 
+		// CORS handling
+		if origin := c.Request.Header.Get("Origin"); origin != "" {
+			if _, exists := c.Writer.Header()["Access-Control-Allow-Origin"]; !exists {
+				c.Header("Access-Control-Allow-Origin", origin)
+			}
+		}
+
 		if recorder.Code != http.StatusOK {
 			var openAIError struct {
 				Error struct {
@@ -830,13 +837,6 @@ func (pm *ProxyManager) ollamaLegacyEmbeddingsHandler() gin.HandlerFunc {
 
 		resp := OllamaLegacyEmbeddingsResponse{
 			Embedding: openAIResp.Data[0].Embedding,
-		}
-
-		// CORS handling
-		if origin := c.Request.Header.Get("Origin"); origin != "" {
-			if _, exists := c.Writer.Header()["Access-Control-Allow-Origin"]; !exists {
-				c.Header("Access-Control-Allow-Origin", origin)
-			}
 		}
 
 		c.JSON(http.StatusOK, resp)
