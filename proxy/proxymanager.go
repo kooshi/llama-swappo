@@ -370,10 +370,14 @@ func (pm *ProxyManager) RegisterOllamaRoutes() {
 	pm.ginEngine.POST("/api/generate", pm.ollamaGenerateHandler())
 	pm.ginEngine.POST("/api/chat", pm.ollamaChatHandler())
 
+	// Embeddings
+	pm.ginEngine.POST("/api/embed", pm.ollamaEmbedHandler())
+	pm.ginEngine.POST("/api/embeddings", pm.ollamaLegacyEmbeddingsHandler()) // legacy endpoint
+
 	// Stubbed endpoints
 	stubbedPostRoutes := []string{
 		"/api/pull", "/api/push", "/api/copy",
-		"/api/create", "/api/delete", "/api/embeddings",
+		"/api/create", "/api/delete",
 	}
 	for _, route := range stubbedPostRoutes {
 		pm.ginEngine.POST(route, pm.ollamaNotImplementedHandler)
