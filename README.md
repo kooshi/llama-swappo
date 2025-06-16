@@ -12,9 +12,11 @@ This commit automatically rebases onto the latest llama-swap nightly.
   - `HEAD /` - for health check
   - `api/tags` - to list models
   - `api/show` - for model details
-  - `api/ps` - to show what's running (untested)
+  - `api/ps` - to show what's running
   - `api/generate` (untested, clients I've used so far seem to use the OpenAI compatible endpoints for actual generation and chat)
   - `api/chat` (untested)
+  - `api/embed`
+  - `api/embeddings`
 
 ## How to install
 
