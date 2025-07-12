@@ -19,14 +19,7 @@ This commit automatically rebases onto the latest llama-swap nightly.
   - `api/embeddings`
 
 ## How to install
-
-```sh
-git clone https://github.com/kooshi/llama-swappo
-cd llama-swappo
-go build
-```
-
-That will get you the executable. Place it wherever your currently installed program is, start it as usual, and it should just work.
+Use the original [Building from source](#building-from-source) instructions, and overwrite your installed llama-swap executable with the newly built one.
 
 ## Configuration
 
