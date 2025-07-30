@@ -18,7 +18,6 @@ import (
 	"github.com/mostlygeek/llama-swap/event"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
-	"github.com/tidwall/gjson"
 )
 
 const (
