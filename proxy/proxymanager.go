@@ -19,7 +19,6 @@ import (
 	"github.com/mostlygeek/llama-swap/proxy/config"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
-	"github.com/tidwall/gjson"
 )
 
 const (
