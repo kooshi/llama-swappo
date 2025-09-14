@@ -433,6 +433,7 @@ func (pm *ProxyManager) ollamaChatHandler() gin.HandlerFunc {
 		}
 		proxyDestReq.Header.Set("Content-Type", "application/json")
 		proxyDestReq.Header.Set("Accept", "application/json, text/event-stream")
+		proxyDestReq.Header.Set("Content-Length", fmt.Sprintf("%d", len(openAIReqBodyBytes)))
 
 		if isStreaming {
 			c.Header("Content-Type", "application/x-ndjson")
@@ -558,6 +559,7 @@ func (pm *ProxyManager) ollamaGenerateHandler() gin.HandlerFunc {
 		}
 		proxyDestReq.Header.Set("Content-Type", "application/json")
 		proxyDestReq.Header.Set("Accept", "application/json, text/event-stream")
+		proxyDestReq.Header.Set("Content-Length", fmt.Sprintf("%d", len(openAIReqBodyBytes)))
 
 		if isStreaming {
 			c.Header("Content-Type", "application/x-ndjson")
@@ -680,9 +682,7 @@ func (pm *ProxyManager) ollamaEmbedHandler() gin.HandlerFunc {
 		
 		proxyDestReq.Header.Set("Content-Type", "application/json")
 		proxyDestReq.Header.Set("Accept", "application/json")
-
-		// Remove Transfer-Encoding header if present - llamafile --v2 complains
-		proxyDestReq.Header.Set("content-length", fmt.Sprintf("%d", len(openAIReqBody)))
+		proxyDestReq.Header.Set("Content-Length", fmt.Sprintf("%d", len(openAIReqBody)))
 		
 		recorder := httptest.NewRecorder()
 		process.ProxyRequest(recorder, proxyDestReq)
@@ -795,6 +795,7 @@ func (pm *ProxyManager) ollamaLegacyEmbeddingsHandler() gin.HandlerFunc {
 		}
 		proxyDestReq.Header.Set("Content-Type", "application/json")
 		proxyDestReq.Header.Set("Accept", "application/json")
+		proxyDestReq.Header.Set("Content-Length", fmt.Sprintf("%d", len(openAIReqBody)))
 
 		recorder := httptest.NewRecorder()
 		process.ProxyRequest(recorder, proxyDestReq)
