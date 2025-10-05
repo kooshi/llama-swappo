@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/mostlygeek/llama-swap/proxy/config"
 )
 
 // ServerArgs holds information parsed or inferred from server command line arguments.
@@ -136,7 +138,7 @@ func (p *LlamaServerParser) Parse(cmdStr string, modelID string) ServerArgs {
 		Capabilities: []string{"completion"}, // Default
 	}
 
-	args, err := SanitizeCommand(cmdStr)
+	args, err := config.SanitizeCommand(cmdStr)
 	if err != nil {
 		// If sanitization fails, proceed with inference based on modelID only
 		parsed.Architecture = inferPattern(modelID, architecturePatterns, orderedArchKeys)
