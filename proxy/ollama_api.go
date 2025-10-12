@@ -46,25 +46,25 @@ func (pm *ProxyManager) ollamaListTagsHandler() gin.HandlerFunc {
 				continue
 			}
 			details := OllamaModelDetails{Format: "gguf"}
-			if modelCfg.Metadata.Family != "" {
-				details.Family = modelCfg.Metadata.Family
+			if family, ok := modelCfg.Metadata["family"].(string); ok && family != "" {
+				details.Family = family
 			} else {
 				// Basic inference for list view
 				arch := "unknown"
-				if modelCfg.Metadata.Architecture != "" {
-					arch = modelCfg.Metadata.Architecture
+				if v, ok := modelCfg.Metadata["architecture"].(string); ok && v != "" {
+					arch = v
 				} else {
 					arch = inferPattern(id, architecturePatterns, orderedArchKeys)
 				}
 				details.Family = inferFamilyFromName(id, arch)
 			}
-			if modelCfg.Metadata.ParameterSize != "" {
-				details.ParameterSize = modelCfg.Metadata.ParameterSize
+			if paramSize, ok := modelCfg.Metadata["parameterSize"].(string); ok && paramSize != "" {
+				details.ParameterSize = paramSize
 			} else {
 				details.ParameterSize = inferParameterSizeFromName(id)
 			}
-			if modelCfg.Metadata.QuantizationLevel != "" {
-				details.QuantizationLevel = modelCfg.Metadata.QuantizationLevel
+			if quantLevel, ok := modelCfg.Metadata["quantizationLevel"].(string); ok && quantLevel != "" {
+				details.QuantizationLevel = quantLevel
 			} else {
 				details.QuantizationLevel = inferQuantizationLevelFromName(id)
 			}
@@ -132,24 +132,32 @@ func (pm *ProxyManager) ollamaShowHandler() gin.HandlerFunc {
 			caps = []string{"completion"}
 		}
 
-		// Override with MetadataConfig if present
-		if modelCfg.Metadata.Architecture != "" {
-			arch = modelCfg.Metadata.Architecture
+		// Override with metadata if present
+		if v, ok := modelCfg.Metadata["architecture"].(string); ok && v != "" {
+			arch = v
 		}
-		if modelCfg.Metadata.Family != "" {
-			family = modelCfg.Metadata.Family
+		if v, ok := modelCfg.Metadata["family"].(string); ok && v != "" {
+			family = v
 		}
-		if modelCfg.Metadata.ParameterSize != "" {
-			paramSize = modelCfg.Metadata.ParameterSize
+		if v, ok := modelCfg.Metadata["parameterSize"].(string); ok && v != "" {
+			paramSize = v
 		}
-		if modelCfg.Metadata.QuantizationLevel != "" {
-			quantLevel = modelCfg.Metadata.QuantizationLevel
+		if v, ok := modelCfg.Metadata["quantizationLevel"].(string); ok && v != "" {
+			quantLevel = v
 		}
-		if modelCfg.Metadata.ContextLength > 0 {
-			ctxLength = modelCfg.Metadata.ContextLength
+		if v, ok := modelCfg.Metadata["contextLength"].(int); ok && v != 0 {
+			ctxLength = v;
 		}
-		if len(modelCfg.Metadata.Capabilities) > 0 {
-			caps = modelCfg.Metadata.Capabilities
+		if v, ok := modelCfg.Metadata["capabilities"].([]any); ok && len(v) > 0 {
+			newCaps := make([]string, 0, len(v))
+			for _, item := range v {
+				if s, isString := item.(string); isString {
+					newCaps = append(newCaps, s)
+				}
+			}
+			if len(newCaps) > 0 {
+				caps = newCaps
+			}
 		}
 
 		details := OllamaModelDetails{
@@ -210,24 +218,24 @@ func (pm *ProxyManager) ollamaPSHandler() gin.HandlerFunc {
 					details := OllamaModelDetails{Format: "gguf"}
 
 					arch := "unknown"
-					if modelCfg.Metadata.Architecture != "" {
-						arch = modelCfg.Metadata.Architecture
+					if v, ok := modelCfg.Metadata["architecture"].(string); ok && v != "" {
+						arch = v
 					} else {
 						arch = inferPattern(modelID, architecturePatterns, orderedArchKeys)
 					}
 
-					if modelCfg.Metadata.Family != "" {
-						details.Family = modelCfg.Metadata.Family
+					if v, ok := modelCfg.Metadata["family"].(string); ok && v != "" {
+						details.Family = v
 					} else {
 						details.Family = inferFamilyFromName(modelID, arch)
 					}
-					if modelCfg.Metadata.ParameterSize != "" {
-						details.ParameterSize = modelCfg.Metadata.ParameterSize
+					if v, ok := modelCfg.Metadata["parameterSize"].(string); ok && v != "" {
+						details.ParameterSize = v
 					} else {
 						details.ParameterSize = inferParameterSizeFromName(modelID)
 					}
-					if modelCfg.Metadata.QuantizationLevel != "" {
-						details.QuantizationLevel = modelCfg.Metadata.QuantizationLevel
+					if v, ok := modelCfg.Metadata["quantizationLevel"].(string); ok && v != "" {
+						details.QuantizationLevel = v
 					} else {
 						details.QuantizationLevel = inferQuantizationLevelFromName(modelID)
 					}
