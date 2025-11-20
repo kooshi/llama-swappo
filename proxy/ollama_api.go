@@ -13,6 +13,38 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// normalizeKeepAlive converts keep_alive from interface{} to string format
+// Accepts numbers (int, float64) and converts to duration string, or passes through strings
+func normalizeKeepAlive(keepAlive interface{}) string {
+	if keepAlive == nil {
+		return ""
+	}
+
+	switch v := keepAlive.(type) {
+	case string:
+		return v
+	case int:
+		// Convert seconds to duration string (e.g., 300 -> "5m")
+		return fmt.Sprintf("%ds", v)
+	case float64:
+		// Convert seconds to duration string, handling fractional seconds with proper rounding
+		return fmt.Sprintf("%.0fs", v+0.5)
+	case json.Number:
+		// Handle JSON numbers that come as string
+		if num, err := v.Int64(); err == nil {
+			return fmt.Sprintf("%ds", num)
+		}
+		// Try float if int conversion fails
+		if num, err := v.Float64(); err == nil {
+			return fmt.Sprintf("%.0fs", num+0.5)
+		}
+		return ""
+	default:
+		// For any other type, try to convert to string
+		return fmt.Sprintf("%v", v)
+	}
+}
+
 func (pm *ProxyManager) sendOllamaError(c *gin.Context, statusCode int, message string) {
 	c.JSON(statusCode, OllamaErrorResponse{Error: message})
 }
@@ -404,6 +436,12 @@ func (pm *ProxyManager) ollamaChatHandler() gin.HandlerFunc {
 			return
 		}
 
+		// Normalize keep_alive field to handle both numeric and string inputs
+		normalizedKeepAlive := normalizeKeepAlive(ollamaReq.KeepAlive)
+		if normalizedKeepAlive != "" {
+			ollamaReq.KeepAlive = normalizedKeepAlive
+		}
+
 		if ollamaReq.Model == "" {
 			pm.sendOllamaError(c, http.StatusBadRequest, "Model name is required.")
 			return
@@ -516,6 +554,12 @@ func (pm *ProxyManager) ollamaGenerateHandler() gin.HandlerFunc {
 		if err := c.ShouldBindJSON(&ollamaReq); err != nil {
 			pm.sendOllamaError(c, http.StatusBadRequest, fmt.Sprintf("Invalid request: %v", err))
 			return
+		}
+
+		// Normalize keep_alive field to handle both numeric and string inputs
+		normalizedKeepAlive := normalizeKeepAlive(ollamaReq.KeepAlive)
+		if normalizedKeepAlive != "" {
+			ollamaReq.KeepAlive = normalizedKeepAlive
 		}
 
 		if ollamaReq.Model == "" {
@@ -637,6 +681,13 @@ func (pm *ProxyManager) ollamaEmbedHandler() gin.HandlerFunc {
 			pm.sendOllamaError(c, http.StatusBadRequest, fmt.Sprintf("Invalid request: %v", err))
 			return
 		}
+
+		// Normalize keep_alive field to handle both numeric and string inputs
+		normalizedKeepAlive := normalizeKeepAlive(req.KeepAlive)
+		if normalizedKeepAlive != "" {
+			req.KeepAlive = normalizedKeepAlive
+		}
+
 		if req.Model == "" {
 			pm.sendOllamaError(c, http.StatusBadRequest, "Model name is required.")
 			return
@@ -754,6 +805,13 @@ func (pm *ProxyManager) ollamaLegacyEmbeddingsHandler() gin.HandlerFunc {
 			pm.sendOllamaError(c, http.StatusBadRequest, fmt.Sprintf("Invalid request: %v", err))
 			return
 		}
+
+		// Normalize keep_alive field to handle both numeric and string inputs
+		normalizedKeepAlive := normalizeKeepAlive(req.KeepAlive)
+		if normalizedKeepAlive != "" {
+			req.KeepAlive = normalizedKeepAlive
+		}
+
 		if req.Model == "" {
 			pm.sendOllamaError(c, http.StatusBadRequest, "Model name is required.")
 			return
@@ -873,7 +931,7 @@ type OllamaGenerateRequest struct {
 	Raw       bool                   `json:"raw,omitempty"`
 	Format    string                 `json:"format,omitempty"`
 	Images    []string               `json:"images,omitempty"`
-	KeepAlive string                 `json:"keep_alive,omitempty"`
+	KeepAlive interface{}            `json:"keep_alive,omitempty"`
 	Options   map[string]interface{} `json:"options,omitempty"`
 }
 
@@ -906,7 +964,7 @@ type OllamaChatRequest struct {
 	Messages  []OllamaMessage        `json:"messages"`
 	Stream    *bool                  `json:"stream,omitempty"`
 	Format    string                 `json:"format,omitempty"`
-	KeepAlive string                 `json:"keep_alive,omitempty"`
+	KeepAlive interface{}            `json:"keep_alive,omitempty"`
 	Options   map[string]interface{} `json:"options,omitempty"`
 }
 
@@ -1000,7 +1058,7 @@ type OllamaEmbedRequest struct {
 	Input     interface{}            `json:"input"` // string or []string
 	Truncate  *bool                  `json:"truncate,omitempty"`
 	Options   map[string]interface{} `json:"options,omitempty"`
-	KeepAlive string                 `json:"keep_alive,omitempty"`
+	KeepAlive interface{}            `json:"keep_alive,omitempty"`
 }
 
 // OllamaEmbedResponse is the response from /api/embed.
@@ -1017,7 +1075,7 @@ type OllamaLegacyEmbeddingsRequest struct {
 	Model     string                 `json:"model"`
 	Prompt    string                 `json:"prompt"`
 	Options   map[string]interface{} `json:"options,omitempty"`
-	KeepAlive string                 `json:"keep_alive,omitempty"`
+	KeepAlive interface{}            `json:"keep_alive,omitempty"`
 }
 
 // OllamaLegacyEmbeddingsResponse is the response from /api/embeddings.
