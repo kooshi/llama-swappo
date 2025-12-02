@@ -1000,7 +1000,7 @@ type OllamaModelResponse struct {
 
 // OllamaModelDetails provides more details about a model.
 type OllamaModelDetails struct {
-	ParentModel       string   `json:"parent_model,omitempty"`
+	ParentModel       string   `json:"parent_model"`
 	Format            string   `json:"format,omitempty"`
 	Family            string   `json:"family,omitempty"`
 	Families          []string `json:"families,omitempty"`
