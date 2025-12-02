@@ -67,6 +67,12 @@ func (pm *ProxyManager) ollamaHeartbeatHandler(c *gin.Context) {
 	c.String(http.StatusOK, "Ollama is running") // Ollama server returns this string
 }
 
+func (pm *ProxyManager) ollamaPullHandler() gin.HandlerFunc {
+       return func(c *gin.Context) {
+               c.JSON(http.StatusOK, "{\"status\":\"success\"}")
+       }
+}
+
 func (pm *ProxyManager) ollamaListTagsHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		models := []OllamaModelResponse{}
