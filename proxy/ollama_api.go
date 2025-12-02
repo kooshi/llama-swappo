@@ -67,6 +67,12 @@ func (pm *ProxyManager) ollamaHeartbeatHandler(c *gin.Context) {
 	c.String(http.StatusOK, "Ollama is running") // Ollama server returns this string
 }
 
+func (pm *ProxyManager) ollamaPullHandler() gin.HandlerFunc {
+       return func(c *gin.Context) {
+               c.JSON(http.StatusOK, "{\"status\":\"success\"}")
+       }
+}
+
 func (pm *ProxyManager) ollamaListTagsHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		models := []OllamaModelResponse{}
@@ -1000,7 +1006,7 @@ type OllamaModelResponse struct {
 
 // OllamaModelDetails provides more details about a model.
 type OllamaModelDetails struct {
-	ParentModel       string   `json:"parent_model,omitempty"`
+	ParentModel       string   `json:"parent_model"`
 	Format            string   `json:"format,omitempty"`
 	Family            string   `json:"family,omitempty"`
 	Families          []string `json:"families,omitempty"`

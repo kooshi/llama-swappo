@@ -344,6 +344,7 @@ func (pm *ProxyManager) RegisterOllamaRoutes() {
 	pm.ginEngine.GET("/api/tags", pm.ollamaListTagsHandler())
 	pm.ginEngine.POST("/api/show", pm.ollamaShowHandler())
 	pm.ginEngine.GET("/api/ps", pm.ollamaPSHandler())
+	pm.ginEngine.GET("/api/pull", pm.pm.ollamaPullHandler())
 
 	// Inference
 	pm.ginEngine.POST("/api/generate", pm.ollamaGenerateHandler())
@@ -355,7 +356,7 @@ func (pm *ProxyManager) RegisterOllamaRoutes() {
 
 	// Stubbed endpoints
 	stubbedPostRoutes := []string{
-		"/api/pull", "/api/push", "/api/copy",
+		"/api/push", "/api/copy",
 		"/api/create", "/api/delete",
 	}
 	for _, route := range stubbedPostRoutes {
