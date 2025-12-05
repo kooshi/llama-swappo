@@ -358,8 +358,10 @@ func (pm *ProxyManager) setupGinEngine() {
 func (pm *ProxyManager) RegisterOllamaRoutes() {
 	// General Ollama API
 	pm.ginEngine.HEAD("/", pm.ollamaHeartbeatHandler) //HEAD '/' does not conflict with llama-swap's GET '/'
-	pm.ginEngine.GET("/api/version", pm.ollamaVersionHandler())
-	pm.ginEngine.HEAD("/api/version", pm.ollamaVersionHandler())
+	
+	// Ollama version endpoint conflicted with llama-swap's
+	//pm.ginEngine.GET("/api/version", pm.ollamaVersionHandler())
+	//pm.ginEngine.HEAD("/api/version", pm.ollamaVersionHandler())
 
 	// Model management
 	pm.ginEngine.GET("/api/tags", pm.ollamaListTagsHandler())
