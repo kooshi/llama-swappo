@@ -179,7 +179,7 @@ func (pm *ProxyManager) ollamaShowHandler() gin.HandlerFunc {
 			quantLevel = v
 		}
 		if v, ok := modelCfg.Metadata["contextLength"].(int); ok && v != 0 {
-			ctxLength = v;
+			ctxLength = v
 		}
 		if v, ok := modelCfg.Metadata["capabilities"].([]any); ok && len(v) > 0 {
 			newCaps := make([]string, 0, len(v))
@@ -304,9 +304,9 @@ func (pm *ProxyManager) ollamaPSHandler() gin.HandlerFunc {
 type transformingResponseWriter struct {
 	ginWriter      gin.ResponseWriter
 	modelName      string
-	buffer         bytes.Buffer                   // To handle partial SSE events
-	isChat         bool                           // True for chat, false for generate
-	toolCallBuffer map[int]*accumulatedToolCall   // Accumulate streaming tool call deltas by index
+	buffer         bytes.Buffer                 // To handle partial SSE events
+	isChat         bool                         // True for chat, false for generate
+	toolCallBuffer map[int]*accumulatedToolCall // Accumulate streaming tool call deltas by index
 }
 
 // accumulatedToolCall collects streaming tool call deltas until complete
@@ -429,9 +429,9 @@ func (trw *transformingResponseWriter) Flush() {
 						}
 
 						ollamaResp := OllamaChatResponse{
-							Model:     trw.modelName,
-							CreatedAt: time.Now().UTC(),
-							Message:   message,
+							Model:      trw.modelName,
+							CreatedAt:  time.Now().UTC(),
+							Message:    message,
 							Done:       choice.FinishReason != "",
 							DoneReason: openAIFinishReasonToOllama(choice.FinishReason),
 						}
@@ -614,9 +614,9 @@ func (pm *ProxyManager) ollamaChatHandler() gin.HandlerFunc {
 			}
 
 			ollamaFinalResp := OllamaChatResponse{
-				Model:     ollamaReq.Model,
-				CreatedAt: time.Unix(openAIResp.Created, 0).UTC(),
-				Message:   message,
+				Model:           ollamaReq.Model,
+				CreatedAt:       time.Unix(openAIResp.Created, 0).UTC(),
+				Message:         message,
 				Done:            true,
 				DoneReason:      openAIFinishReasonToOllama(choice.FinishReason),
 				TotalDuration:   0,
@@ -827,11 +827,11 @@ func (pm *ProxyManager) ollamaEmbedHandler() gin.HandlerFunc {
 			pm.sendOllamaError(c, http.StatusInternalServerError, fmt.Sprintf("Error creating internal request: %v", err))
 			return
 		}
-		
+
 		proxyDestReq.Header.Set("Content-Type", "application/json")
 		proxyDestReq.Header.Set("Accept", "application/json")
 		proxyDestReq.Header.Set("Content-Length", fmt.Sprintf("%d", len(openAIReqBody)))
-		
+
 		recorder := httptest.NewRecorder()
 		process.ProxyRequest(recorder, proxyDestReq)
 
@@ -858,9 +858,9 @@ func (pm *ProxyManager) ollamaEmbedHandler() gin.HandlerFunc {
 
 		// Parse OpenAI response and transform to Ollama format
 		var openAIResp struct {
-			Object     string `json:"object"`
-			Model      string `json:"model"`
-			Data       []struct {
+			Object string `json:"object"`
+			Model  string `json:"model"`
+			Data   []struct {
 				Embedding []float32 `json:"embedding"`
 			} `json:"data"`
 			Usage struct {
@@ -1042,8 +1042,8 @@ type OllamaGenerateResponse struct {
 
 // Tool definition types
 type OllamaTool struct {
-	Type     string               `json:"type"`
-	Function OllamaToolFunction   `json:"function"`
+	Type     string             `json:"type"`
+	Function OllamaToolFunction `json:"function"`
 }
 
 type OllamaToolFunction struct {
@@ -1054,9 +1054,9 @@ type OllamaToolFunction struct {
 
 // Tool call types - Compatible with both Ollama native and OpenAI formats
 type OllamaToolCall struct {
-	ID       string              `json:"id,omitempty"` // Optional for compatibility with older Ollama
-	Type     string              `json:"type,omitempty"` // Optional - Zed doesn't send this
-	Function OllamaToolCallFunc  `json:"function"`
+	ID       string             `json:"id,omitempty"`   // Optional for compatibility with older Ollama
+	Type     string             `json:"type,omitempty"` // Optional - Zed doesn't send this
+	Function OllamaToolCallFunc `json:"function"`
 }
 
 type OllamaToolCallFunc struct {
@@ -1077,14 +1077,14 @@ type OllamaMessage struct {
 
 // OllamaChatRequest describes a request to /api/chat.
 type OllamaChatRequest struct {
-	Model       string                   `json:"model"`
-	Messages    []OllamaMessage         `json:"messages"`
-	Stream      *bool                   `json:"stream,omitempty"`
-	Format      string                  `json:"format,omitempty"`
-	KeepAlive   interface{}             `json:"keep_alive,omitempty"`
-	Options     map[string]interface{}  `json:"options,omitempty"`
-	Tools       []OllamaTool            `json:"tools,omitempty"`
-	ToolChoice  interface{}             `json:"tool_choice,omitempty"`
+	Model      string                 `json:"model"`
+	Messages   []OllamaMessage        `json:"messages"`
+	Stream     *bool                  `json:"stream,omitempty"`
+	Format     string                 `json:"format,omitempty"`
+	KeepAlive  interface{}            `json:"keep_alive,omitempty"`
+	Options    map[string]interface{} `json:"options,omitempty"`
+	Tools      []OllamaTool           `json:"tools,omitempty"`
+	ToolChoice interface{}            `json:"tool_choice,omitempty"`
 }
 
 // OllamaChatResponse is the response from /api/chat.
@@ -1182,11 +1182,11 @@ type OllamaEmbedRequest struct {
 
 // OllamaEmbedResponse is the response from /api/embed.
 type OllamaEmbedResponse struct {
-	Model           string        `json:"model"`
-	Embeddings      [][]float32   `json:"embeddings"`
-	TotalDuration   int64         `json:"total_duration,omitempty"`
-	LoadDuration    int64         `json:"load_duration,omitempty"`
-	PromptEvalCount int           `json:"prompt_eval_count,omitempty"`
+	Model           string      `json:"model"`
+	Embeddings      [][]float32 `json:"embeddings"`
+	TotalDuration   int64       `json:"total_duration,omitempty"`
+	LoadDuration    int64       `json:"load_duration,omitempty"`
+	PromptEvalCount int         `json:"prompt_eval_count,omitempty"`
 }
 
 // OllamaLegacyEmbeddingsRequest describes a request to /api/embeddings.
@@ -1206,9 +1206,9 @@ type OllamaLegacyEmbeddingsResponse struct {
 
 // OpenAIChatCompletionStreamChoiceDelta is part of an OpenAI stream event.
 type OpenAIChatCompletionStreamChoiceDelta struct {
-	Content   string                       `json:"content,omitempty"`
-	Role      string                       `json:"role,omitempty"`
-	ToolCalls []OpenAIStreamToolCallDelta   `json:"tool_calls,omitempty"`
+	Content   string                      `json:"content,omitempty"`
+	Role      string                      `json:"role,omitempty"`
+	ToolCalls []OpenAIStreamToolCallDelta `json:"tool_calls,omitempty"`
 }
 
 // OpenAIStreamToolCallDelta represents a tool call delta in a streaming response
@@ -1278,16 +1278,16 @@ type OpenAIChatCompletionResponse struct {
 
 // OpenAIChatCompletionMessage is the message structure in a non-streaming OpenAI response.
 type OpenAIChatCompletionMessage struct {
-	Role      string             `json:"role"`
-	Content   string             `json:"content"`
-	ToolCalls []OpenAIToolCall   `json:"tool_calls,omitempty"`
+	Role      string           `json:"role"`
+	Content   string           `json:"content"`
+	ToolCalls []OpenAIToolCall `json:"tool_calls,omitempty"`
 }
 
 // OpenAIToolCall represents a tool call in OpenAI format
 type OpenAIToolCall struct {
 	ID       string                 `json:"id"`
 	Type     string                 `json:"type"`
-	Function OpenAIToolCallFunction  `json:"function"`
+	Function OpenAIToolCallFunction `json:"function"`
 }
 
 // OpenAIToolCallFunction represents the function part of a tool call

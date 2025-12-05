@@ -27,22 +27,22 @@ func TestAaaOllamaToolCallingFlow(t *testing.T) {
 		if tools, ok := req["tools"].([]interface{}); ok && len(tools) > 0 {
 			// Return tool call response
 			response := map[string]interface{}{
-				"id": "chatcmpl-123",
-				"object": "chat.completion",
+				"id":      "chatcmpl-123",
+				"object":  "chat.completion",
 				"created": 1677652288,
-				"model": "test-model",
+				"model":   "test-model",
 				"choices": []map[string]interface{}{
 					{
 						"index": 0,
 						"message": map[string]interface{}{
-							"role": "assistant",
+							"role":    "assistant",
 							"content": nil,
 							"tool_calls": []map[string]interface{}{
 								{
-									"id": "call_123",
+									"id":   "call_123",
 									"type": "function",
 									"function": map[string]interface{}{
-										"name": "get_weather",
+										"name":      "get_weather",
 										"arguments": `{"location":"test location"}`,
 									},
 								},
@@ -64,15 +64,15 @@ func TestAaaOllamaToolCallingFlow(t *testing.T) {
 					if role, ok := msgMap["role"].(string); ok && role == "tool" {
 						// Found a tool response, return final response
 						response := map[string]interface{}{
-							"id": "chatcmpl-123",
-							"object": "chat.completion",
+							"id":      "chatcmpl-123",
+							"object":  "chat.completion",
 							"created": 1677652288,
-							"model": "test-model",
+							"model":   "test-model",
 							"choices": []map[string]interface{}{
 								{
 									"index": 0,
 									"message": map[string]interface{}{
-										"role": "assistant",
+										"role":    "assistant",
 										"content": "The weather in Boston is 72 degrees and sunny.",
 									},
 									"finish_reason": "stop",
@@ -89,15 +89,15 @@ func TestAaaOllamaToolCallingFlow(t *testing.T) {
 
 		// Default response for normal chat
 		response := map[string]interface{}{
-			"id": "chatcmpl-123",
-			"object": "chat.completion",
+			"id":      "chatcmpl-123",
+			"object":  "chat.completion",
 			"created": 1677652288,
-			"model": "test-model",
+			"model":   "test-model",
 			"choices": []map[string]interface{}{
 				{
 					"index": 0,
 					"message": map[string]interface{}{
-						"role": "assistant",
+						"role":    "assistant",
 						"content": "Hello! How can I help you today?",
 					},
 					"finish_reason": "stop",
@@ -242,8 +242,8 @@ func TestAaaOllamaToolCallingFlow(t *testing.T) {
 					Content: "What's the weather in Boston?",
 				},
 				{
-					Role:       "assistant",
-					Content:    "I'll check the weather for you.",
+					Role:    "assistant",
+					Content: "I'll check the weather for you.",
 					ToolCalls: []OllamaToolCall{
 						{
 							ID:   "call_123",
