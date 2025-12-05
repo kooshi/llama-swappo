@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"time"
 
@@ -178,7 +179,7 @@ func (pm *ProxyManager) ollamaShowHandler() gin.HandlerFunc {
 			quantLevel = v
 		}
 		if v, ok := modelCfg.Metadata["contextLength"].(int); ok && v != 0 {
-			ctxLength = v;
+			ctxLength = v
 		}
 		if v, ok := modelCfg.Metadata["capabilities"].([]any); ok && len(v) > 0 {
 			newCaps := make([]string, 0, len(v))
@@ -301,17 +302,27 @@ func (pm *ProxyManager) ollamaPSHandler() gin.HandlerFunc {
 
 // transformingResponseWriter captures and transforms SSE stream from OpenAI to Ollama format
 type transformingResponseWriter struct {
-	ginWriter gin.ResponseWriter
-	modelName string
-	buffer    bytes.Buffer // To handle partial SSE events
-	isChat    bool         // True for chat, false for generate
+	ginWriter      gin.ResponseWriter
+	modelName      string
+	buffer         bytes.Buffer                 // To handle partial SSE events
+	isChat         bool                         // True for chat, false for generate
+	toolCallBuffer map[int]*accumulatedToolCall // Accumulate streaming tool call deltas by index
+}
+
+// accumulatedToolCall collects streaming tool call deltas until complete
+type accumulatedToolCall struct {
+	ID        string
+	Type      string
+	Name      string
+	Arguments strings.Builder // accumulate argument fragments
 }
 
 func newTransformingResponseWriter(writer gin.ResponseWriter, modelName string, isChat bool) *transformingResponseWriter {
 	return &transformingResponseWriter{
-		ginWriter: writer,
-		modelName: modelName,
-		isChat:    isChat,
+		ginWriter:      writer,
+		modelName:      modelName,
+		isChat:         isChat,
+		toolCallBuffer: make(map[int]*accumulatedToolCall),
 	}
 }
 
@@ -350,13 +361,77 @@ func (trw *transformingResponseWriter) Flush() {
 				if err = json.Unmarshal([]byte(jsonData), &openAIChatChunk); err == nil {
 					if len(openAIChatChunk.Choices) > 0 {
 						choice := openAIChatChunk.Choices[0]
+						message := OllamaMessage{
+							Role:    openAIRoleToOllama(choice.Delta.Role),
+							Content: choice.Delta.Content,
+						}
+
+						// Handle tool calls in streaming response - ACCUMULATE instead of immediate output
+						// OpenAI streams tool calls incrementally (ID, name, arguments fragments)
+						// We collect them until the stream ends, then emit complete tool calls
+						if len(choice.Delta.ToolCalls) > 0 {
+							for _, tcDelta := range choice.Delta.ToolCalls {
+								acc, exists := trw.toolCallBuffer[tcDelta.Index]
+								if !exists {
+									acc = &accumulatedToolCall{}
+									trw.toolCallBuffer[tcDelta.Index] = acc
+								}
+								// Accumulate fields (only update if non-empty)
+								if tcDelta.ID != "" {
+									acc.ID = tcDelta.ID
+								}
+								if tcDelta.Type != "" {
+									acc.Type = tcDelta.Type
+								}
+								if tcDelta.Function.Name != "" {
+									acc.Name = tcDelta.Function.Name
+								}
+								// Arguments come as string fragments - concatenate
+								acc.Arguments.WriteString(tcDelta.Function.Arguments)
+							}
+							// DON'T add tool calls to message yet - emit on final chunk
+						}
+
+						// On final chunk, emit accumulated tool calls
+						if choice.FinishReason != "" && len(trw.toolCallBuffer) > 0 {
+							ollamaToolCalls := make([]OllamaToolCall, 0, len(trw.toolCallBuffer))
+
+							// Sort by index for consistent ordering
+							indices := make([]int, 0, len(trw.toolCallBuffer))
+							for idx := range trw.toolCallBuffer {
+								indices = append(indices, idx)
+							}
+							sort.Ints(indices)
+
+							for _, idx := range indices {
+								acc := trw.toolCallBuffer[idx]
+								// Skip invalid tool calls (empty name = hallucinated)
+								if acc.Name == "" {
+									continue
+								}
+								var args map[string]interface{}
+								if argsStr := acc.Arguments.String(); argsStr != "" {
+									json.Unmarshal([]byte(argsStr), &args)
+								}
+								ollamaToolCalls = append(ollamaToolCalls, OllamaToolCall{
+									ID:   acc.ID,
+									Type: acc.Type,
+									Function: OllamaToolCallFunc{
+										Index:     idx,
+										Name:      acc.Name,
+										Arguments: args,
+									},
+								})
+							}
+							if len(ollamaToolCalls) > 0 {
+								message.ToolCalls = ollamaToolCalls
+							}
+						}
+
 						ollamaResp := OllamaChatResponse{
-							Model:     trw.modelName,
-							CreatedAt: time.Now().UTC(),
-							Message: OllamaMessage{
-								Role:    openAIRoleToOllama(choice.Delta.Role),
-								Content: choice.Delta.Content,
-							},
+							Model:      trw.modelName,
+							CreatedAt:  time.Now().UTC(),
+							Message:    message,
 							Done:       choice.FinishReason != "",
 							DoneReason: openAIFinishReasonToOllama(choice.FinishReason),
 						}
@@ -436,6 +511,12 @@ func (pm *ProxyManager) ollamaChatHandler() gin.HandlerFunc {
 			return
 		}
 
+		// Validate tool request
+		if err := validateToolRequest(&ollamaReq); err != nil {
+			pm.sendOllamaError(c, http.StatusBadRequest, err.Error())
+			return
+		}
+
 		// Normalize keep_alive field to handle both numeric and string inputs
 		normalizedKeepAlive := normalizeKeepAlive(ollamaReq.KeepAlive)
 		if normalizedKeepAlive != "" {
@@ -460,13 +541,14 @@ func (pm *ProxyManager) ollamaChatHandler() gin.HandlerFunc {
 		}
 
 		openAIMessages := ollamaMessagesToOpenAI(ollamaReq.Messages)
+		openAITools := ollamaToolsToOpenAI(ollamaReq.Tools)
 		modelNameToUse := realModelName
 		if pm.config.Models[realModelName].UseModelName != "" {
 			modelNameToUse = pm.config.Models[realModelName].UseModelName
 		}
 
 		isStreaming := ollamaReq.Stream != nil && *ollamaReq.Stream
-		openAIReqBodyBytes, err := createOpenAIRequestBody(modelNameToUse, openAIMessages, isStreaming, ollamaReq.Options)
+		openAIReqBodyBytes, err := createOpenAIRequestBody(modelNameToUse, openAIMessages, isStreaming, ollamaReq.Options, openAITools, ollamaReq.ToolChoice)
 		if err != nil {
 			pm.sendOllamaError(c, http.StatusInternalServerError, fmt.Sprintf("Error creating OpenAI request: %v", err))
 			return
@@ -521,13 +603,20 @@ func (pm *ProxyManager) ollamaChatHandler() gin.HandlerFunc {
 			}
 
 			choice := openAIResp.Choices[0]
+			message := OllamaMessage{
+				Role:    openAIRoleToOllama(choice.Message.Role),
+				Content: choice.Message.Content,
+			}
+
+			// Handle tool calls in the response
+			if len(choice.Message.ToolCalls) > 0 {
+				message.ToolCalls = openAIToolCallsToOllama(choice.Message.ToolCalls)
+			}
+
 			ollamaFinalResp := OllamaChatResponse{
-				Model:     ollamaReq.Model,
-				CreatedAt: time.Unix(openAIResp.Created, 0).UTC(),
-				Message: OllamaMessage{
-					Role:    openAIRoleToOllama(choice.Message.Role),
-					Content: choice.Message.Content,
-				},
+				Model:           ollamaReq.Model,
+				CreatedAt:       time.Unix(openAIResp.Created, 0).UTC(),
+				Message:         message,
 				Done:            true,
 				DoneReason:      openAIFinishReasonToOllama(choice.FinishReason),
 				TotalDuration:   0,
@@ -738,11 +827,11 @@ func (pm *ProxyManager) ollamaEmbedHandler() gin.HandlerFunc {
 			pm.sendOllamaError(c, http.StatusInternalServerError, fmt.Sprintf("Error creating internal request: %v", err))
 			return
 		}
-		
+
 		proxyDestReq.Header.Set("Content-Type", "application/json")
 		proxyDestReq.Header.Set("Accept", "application/json")
 		proxyDestReq.Header.Set("Content-Length", fmt.Sprintf("%d", len(openAIReqBody)))
-		
+
 		recorder := httptest.NewRecorder()
 		process.ProxyRequest(recorder, proxyDestReq)
 
@@ -769,9 +858,9 @@ func (pm *ProxyManager) ollamaEmbedHandler() gin.HandlerFunc {
 
 		// Parse OpenAI response and transform to Ollama format
 		var openAIResp struct {
-			Object     string `json:"object"`
-			Model      string `json:"model"`
-			Data       []struct {
+			Object string `json:"object"`
+			Model  string `json:"model"`
+			Data   []struct {
 				Embedding []float32 `json:"embedding"`
 			} `json:"data"`
 			Usage struct {
@@ -951,21 +1040,51 @@ type OllamaGenerateResponse struct {
 	EvalDuration       int64     `json:"eval_duration,omitempty"`
 }
 
+// Tool definition types
+type OllamaTool struct {
+	Type     string             `json:"type"`
+	Function OllamaToolFunction `json:"function"`
+}
+
+type OllamaToolFunction struct {
+	Name        string                 `json:"name"`
+	Description string                 `json:"description"`
+	Parameters  map[string]interface{} `json:"parameters"`
+}
+
+// Tool call types - Compatible with both Ollama native and OpenAI formats
+type OllamaToolCall struct {
+	ID       string             `json:"id,omitempty"`   // Optional for compatibility with older Ollama
+	Type     string             `json:"type,omitempty"` // Optional - Zed doesn't send this
+	Function OllamaToolCallFunc `json:"function"`
+}
+
+type OllamaToolCallFunc struct {
+	Index     int                    `json:"index,omitempty"` // Optional
+	Name      string                 `json:"name"`
+	Arguments map[string]interface{} `json:"arguments"`
+}
+
 // OllamaMessage represents a single message in a chat.
 type OllamaMessage struct {
-	Role    string   `json:"role"`
-	Content string   `json:"content"`
-	Images  []string `json:"images,omitempty"`
+	Role       string           `json:"role"`
+	Content    string           `json:"content"`
+	Images     []string         `json:"images,omitempty"`
+	ToolCalls  []OllamaToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"` // For tool role messages (OpenAI style)
+	ToolName   string           `json:"tool_name,omitempty"`    // For tool role messages (Ollama native style)
 }
 
 // OllamaChatRequest describes a request to /api/chat.
 type OllamaChatRequest struct {
-	Model     string                 `json:"model"`
-	Messages  []OllamaMessage        `json:"messages"`
-	Stream    *bool                  `json:"stream,omitempty"`
-	Format    string                 `json:"format,omitempty"`
-	KeepAlive interface{}            `json:"keep_alive,omitempty"`
-	Options   map[string]interface{} `json:"options,omitempty"`
+	Model      string                 `json:"model"`
+	Messages   []OllamaMessage        `json:"messages"`
+	Stream     *bool                  `json:"stream,omitempty"`
+	Format     string                 `json:"format,omitempty"`
+	KeepAlive  interface{}            `json:"keep_alive,omitempty"`
+	Options    map[string]interface{} `json:"options,omitempty"`
+	Tools      []OllamaTool           `json:"tools,omitempty"`
+	ToolChoice interface{}            `json:"tool_choice,omitempty"`
 }
 
 // OllamaChatResponse is the response from /api/chat.
@@ -1063,11 +1182,11 @@ type OllamaEmbedRequest struct {
 
 // OllamaEmbedResponse is the response from /api/embed.
 type OllamaEmbedResponse struct {
-	Model           string        `json:"model"`
-	Embeddings      [][]float32   `json:"embeddings"`
-	TotalDuration   int64         `json:"total_duration,omitempty"`
-	LoadDuration    int64         `json:"load_duration,omitempty"`
-	PromptEvalCount int           `json:"prompt_eval_count,omitempty"`
+	Model           string      `json:"model"`
+	Embeddings      [][]float32 `json:"embeddings"`
+	TotalDuration   int64       `json:"total_duration,omitempty"`
+	LoadDuration    int64       `json:"load_duration,omitempty"`
+	PromptEvalCount int         `json:"prompt_eval_count,omitempty"`
 }
 
 // OllamaLegacyEmbeddingsRequest describes a request to /api/embeddings.
@@ -1087,8 +1206,23 @@ type OllamaLegacyEmbeddingsResponse struct {
 
 // OpenAIChatCompletionStreamChoiceDelta is part of an OpenAI stream event.
 type OpenAIChatCompletionStreamChoiceDelta struct {
-	Content string `json:"content,omitempty"`
-	Role    string `json:"role,omitempty"`
+	Content   string                      `json:"content,omitempty"`
+	Role      string                      `json:"role,omitempty"`
+	ToolCalls []OpenAIStreamToolCallDelta `json:"tool_calls,omitempty"`
+}
+
+// OpenAIStreamToolCallDelta represents a tool call delta in a streaming response
+type OpenAIStreamToolCallDelta struct {
+	Index    int                          `json:"index"`
+	ID       string                       `json:"id,omitempty"`
+	Type     string                       `json:"type,omitempty"`
+	Function OpenAIStreamToolCallFunction `json:"function,omitempty"`
+}
+
+// OpenAIStreamToolCallFunction represents the function part of a streaming tool call
+type OpenAIStreamToolCallFunction struct {
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
 }
 
 // OpenAIChatCompletionStreamChoice is part of an OpenAI stream event.
@@ -1144,8 +1278,22 @@ type OpenAIChatCompletionResponse struct {
 
 // OpenAIChatCompletionMessage is the message structure in a non-streaming OpenAI response.
 type OpenAIChatCompletionMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role      string           `json:"role"`
+	Content   string           `json:"content"`
+	ToolCalls []OpenAIToolCall `json:"tool_calls,omitempty"`
+}
+
+// OpenAIToolCall represents a tool call in OpenAI format
+type OpenAIToolCall struct {
+	ID       string                 `json:"id"`
+	Type     string                 `json:"type"`
+	Function OpenAIToolCallFunction `json:"function"`
+}
+
+// OpenAIToolCallFunction represents the function part of a tool call
+type OpenAIToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 // OpenAIChatCompletionResponseChoice is part of a non-streaming OpenAI chat response.
@@ -1199,19 +1347,104 @@ func openAIRoleToOllama(role string) string {
 func ollamaMessagesToOpenAI(ollamaMsgs []OllamaMessage) []map[string]interface{} {
 	openAIMsgs := make([]map[string]interface{}, len(ollamaMsgs))
 	for i, msg := range ollamaMsgs {
-		openAIMsgs[i] = map[string]interface{}{
+		openAIMsg := map[string]interface{}{
 			"role":    msg.Role,
 			"content": msg.Content,
 		}
+
+		// Handle tool calls from assistant
+		// Filter out invalid tool calls (empty function names) which can occur
+		// when models hallucinate extra tool calls
+		if len(msg.ToolCalls) > 0 {
+			openAIToolCalls := make([]map[string]interface{}, 0, len(msg.ToolCalls))
+			validIndex := 0
+			for _, tc := range msg.ToolCalls {
+				// Skip invalid tool calls with empty function names
+				if tc.Function.Name == "" {
+					continue
+				}
+
+				argsJSON, _ := json.Marshal(tc.Function.Arguments)
+
+				// Generate ID if missing (for compatibility with clients like Zed)
+				toolID := tc.ID
+				if toolID == "" {
+					toolID = fmt.Sprintf("call_%d_%d", i, validIndex)
+				}
+
+				// Default type to "function" if not provided
+				toolType := tc.Type
+				if toolType == "" {
+					toolType = "function"
+				}
+
+				openAIToolCalls = append(openAIToolCalls, map[string]interface{}{
+					"id":   toolID,
+					"type": toolType,
+					"function": map[string]interface{}{
+						"name":      tc.Function.Name,
+						"arguments": string(argsJSON),
+					},
+				})
+				validIndex++
+			}
+			if len(openAIToolCalls) > 0 {
+				openAIMsg["tool_calls"] = openAIToolCalls
+			}
+		}
+
+		// Handle tool role messages
+		// Support both OpenAI style (tool_call_id) and Ollama native style (tool_name)
+		if msg.Role == "tool" {
+			if msg.ToolCallID != "" {
+				openAIMsg["tool_call_id"] = msg.ToolCallID
+			} else if msg.ToolName != "" {
+				// Ollama native format uses tool_name instead of tool_call_id
+				// Generate a synthetic ID based on the tool name for OpenAI compatibility
+				openAIMsg["tool_call_id"] = fmt.Sprintf("call_%s_%d", msg.ToolName, i)
+			}
+			if msg.Content == "" {
+				openAIMsg["content"] = "null"
+			}
+		}
+
+		openAIMsgs[i] = openAIMsg
 	}
 	return openAIMsgs
 }
 
-func createOpenAIRequestBody(modelName string, messages []map[string]interface{}, stream bool, options map[string]interface{}) ([]byte, error) {
+func ollamaToolsToOpenAI(ollamaTools []OllamaTool) []map[string]interface{} {
+	if len(ollamaTools) == 0 {
+		return nil
+	}
+
+	openAITools := make([]map[string]interface{}, len(ollamaTools))
+	for i, tool := range ollamaTools {
+		openAITools[i] = map[string]interface{}{
+			"type": tool.Type,
+			"function": map[string]interface{}{
+				"name":        tool.Function.Name,
+				"description": tool.Function.Description,
+				"parameters":  tool.Function.Parameters, // Pass as object, not JSON string
+			},
+		}
+	}
+	return openAITools
+}
+
+func createOpenAIRequestBody(modelName string, messages []map[string]interface{}, stream bool, options map[string]interface{}, tools []map[string]interface{}, toolChoice interface{}) ([]byte, error) {
 	requestBody := map[string]interface{}{
 		"model":    modelName,
 		"messages": messages,
 		"stream":   stream,
+	}
+
+	if tools != nil {
+		requestBody["tools"] = tools
+	}
+
+	if toolChoice != nil {
+		requestBody["tool_choice"] = toolChoice
 	}
 
 	if options != nil {
@@ -1223,6 +1456,74 @@ func createOpenAIRequestBody(modelName string, messages []map[string]interface{}
 	}
 
 	return json.Marshal(requestBody)
+}
+
+func openAIToolCallsToOllama(toolCalls []OpenAIToolCall) []OllamaToolCall {
+	if len(toolCalls) == 0 {
+		return nil
+	}
+
+	ollamaToolCalls := make([]OllamaToolCall, len(toolCalls))
+	for i, tc := range toolCalls {
+		var args map[string]interface{}
+		json.Unmarshal([]byte(tc.Function.Arguments), &args)
+
+		ollamaToolCalls[i] = OllamaToolCall{
+			ID:   tc.ID, // CRITICAL: Preserve OpenAI ID
+			Type: tc.Type,
+			Function: OllamaToolCallFunc{
+				Index:     i,
+				Name:      tc.Function.Name,
+				Arguments: args,
+			},
+		}
+	}
+
+	return ollamaToolCalls
+}
+
+func validateToolRequest(req *OllamaChatRequest) error {
+	// Validate tool definitions
+	for i, tool := range req.Tools {
+		if tool.Type != "function" {
+			return fmt.Errorf("tool %d: only 'function' type is supported", i)
+		}
+		if tool.Function.Name == "" {
+			return fmt.Errorf("tool %d: missing function name", i)
+		}
+	}
+
+	// Validate messages - be lenient for compatibility with various clients
+	// and to handle models that hallucinate invalid tool calls
+	//
+	// First pass: filter out invalid tool calls with empty function names
+	for i, msg := range req.Messages {
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			validToolCalls := make([]OllamaToolCall, 0, len(msg.ToolCalls))
+			for _, tc := range msg.ToolCalls {
+				if tc.Function.Name != "" {
+					validToolCalls = append(validToolCalls, tc)
+				}
+				// Silently skip invalid tool calls with empty function names
+			}
+			// Update the message with only valid tool calls
+			req.Messages[i].ToolCalls = validToolCalls
+		}
+	}
+
+	// Second pass: filter out tool response messages that have empty tool_name
+	// These correspond to the hallucinated tool calls we filtered above
+	validMessages := make([]OllamaMessage, 0, len(req.Messages))
+	for _, msg := range req.Messages {
+		// Skip tool responses with empty identifiers (responses to hallucinated tool calls)
+		if msg.Role == "tool" && msg.ToolCallID == "" && msg.ToolName == "" {
+			continue // Skip this message entirely
+		}
+		validMessages = append(validMessages, msg)
+	}
+	req.Messages = validMessages
+
+	return nil
 }
 
 func createOpenAILegacyCompletionRequestBody(modelName string, prompt string, stream bool, options map[string]interface{}) ([]byte, error) {
