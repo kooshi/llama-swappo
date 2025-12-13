@@ -548,7 +548,11 @@ func (pm *ProxyManager) ollamaChatHandler() gin.HandlerFunc {
 		}
 
 		isStreaming := ollamaReq.Stream != nil && *ollamaReq.Stream
-		openAIReqBodyBytes, err := createOpenAIRequestBody(modelNameToUse, openAIMessages, isStreaming, ollamaReq.Options, openAITools, ollamaReq.ToolChoice)
+		opts := &createOpenAIRequestBodyOptions{
+			Think:  ollamaReq.Think,
+			Format: ollamaReq.Format,
+		}
+		openAIReqBodyBytes, err := createOpenAIRequestBody(modelNameToUse, openAIMessages, isStreaming, ollamaReq.Options, openAITools, ollamaReq.ToolChoice, opts)
 		if err != nil {
 			pm.sendOllamaError(c, http.StatusInternalServerError, fmt.Sprintf("Error creating OpenAI request: %v", err))
 			return
@@ -1080,11 +1084,12 @@ type OllamaChatRequest struct {
 	Model      string                 `json:"model"`
 	Messages   []OllamaMessage        `json:"messages"`
 	Stream     *bool                  `json:"stream,omitempty"`
-	Format     string                 `json:"format,omitempty"`
+	Format     interface{}            `json:"format,omitempty"` // string "json" or JSON Schema object
 	KeepAlive  interface{}            `json:"keep_alive,omitempty"`
 	Options    map[string]interface{} `json:"options,omitempty"`
 	Tools      []OllamaTool           `json:"tools,omitempty"`
 	ToolChoice interface{}            `json:"tool_choice,omitempty"`
+	Think      *bool                  `json:"think,omitempty"` // Enable/disable thinking mode for reasoning models
 }
 
 // OllamaChatResponse is the response from /api/chat.
@@ -1432,7 +1437,13 @@ func ollamaToolsToOpenAI(ollamaTools []OllamaTool) []map[string]interface{} {
 	return openAITools
 }
 
-func createOpenAIRequestBody(modelName string, messages []map[string]interface{}, stream bool, options map[string]interface{}, tools []map[string]interface{}, toolChoice interface{}) ([]byte, error) {
+// createOpenAIRequestBodyOptions holds optional parameters for createOpenAIRequestBody
+type createOpenAIRequestBodyOptions struct {
+	Think  *bool       // Ollama think parameter -> chat_template_kwargs.enable_thinking
+	Format interface{} // Ollama format parameter (string "json" or JSON Schema object)
+}
+
+func createOpenAIRequestBody(modelName string, messages []map[string]interface{}, stream bool, options map[string]interface{}, tools []map[string]interface{}, toolChoice interface{}, opts *createOpenAIRequestBodyOptions) ([]byte, error) {
 	requestBody := map[string]interface{}{
 		"model":    modelName,
 		"messages": messages,
@@ -1451,6 +1462,35 @@ func createOpenAIRequestBody(modelName string, messages []map[string]interface{}
 		for k, v := range options {
 			if _, exists := requestBody[k]; !exists {
 				requestBody[k] = v
+			}
+		}
+	}
+
+	// Handle Ollama-specific options
+	if opts != nil {
+		// Translate Ollama's think parameter to llama-server's chat_template_kwargs
+		if opts.Think != nil {
+			requestBody["chat_template_kwargs"] = map[string]interface{}{
+				"enable_thinking": *opts.Think,
+			}
+		}
+
+		// Handle format parameter
+		if opts.Format != nil {
+			switch f := opts.Format.(type) {
+			case string:
+				// Simple "json" format
+				if f == "json" {
+					requestBody["response_format"] = map[string]interface{}{
+						"type": "json_object",
+					}
+				}
+			case map[string]interface{}:
+				// JSON Schema object for structured outputs
+				requestBody["response_format"] = map[string]interface{}{
+					"type":   "json_schema",
+					"schema": f,
+				}
 			}
 		}
 	}

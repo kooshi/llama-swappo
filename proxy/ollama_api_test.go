@@ -419,3 +419,124 @@ func TestOllamaRequestStructs(t *testing.T) {
 		})
 	}
 }
+
+// TestCreateOpenAIRequestBodyWithThink tests that the think parameter is correctly translated
+func TestCreateOpenAIRequestBodyWithThink(t *testing.T) {
+	tests := []struct {
+		name           string
+		think          *bool
+		format         interface{}
+		expectKwargs   bool
+		expectThinking *bool
+		expectFormat   bool
+	}{
+		{
+			name:           "think=true",
+			think:          boolPtr(true),
+			expectKwargs:   true,
+			expectThinking: boolPtr(true),
+		},
+		{
+			name:           "think=false",
+			think:          boolPtr(false),
+			expectKwargs:   true,
+			expectThinking: boolPtr(false),
+		},
+		{
+			name:         "think=nil (no param)",
+			think:        nil,
+			expectKwargs: false,
+		},
+		{
+			name:         "format=json",
+			format:       "json",
+			expectFormat: true,
+		},
+		{
+			name: "format=json_schema",
+			format: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"name": map[string]interface{}{"type": "string"},
+				},
+			},
+			expectFormat: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := &createOpenAIRequestBodyOptions{
+				Think:  tt.think,
+				Format: tt.format,
+			}
+			messages := []map[string]interface{}{
+				{"role": "user", "content": "test"},
+			}
+
+			bodyBytes, err := createOpenAIRequestBody("test-model", messages, false, nil, nil, nil, opts)
+			assert.NoError(t, err)
+
+			var result map[string]interface{}
+			err = json.Unmarshal(bodyBytes, &result)
+			assert.NoError(t, err)
+
+			if tt.expectKwargs {
+				kwargs, ok := result["chat_template_kwargs"].(map[string]interface{})
+				assert.True(t, ok, "chat_template_kwargs should exist")
+				enableThinking, ok := kwargs["enable_thinking"].(bool)
+				assert.True(t, ok, "enable_thinking should be a bool")
+				assert.Equal(t, *tt.expectThinking, enableThinking)
+			} else {
+				_, ok := result["chat_template_kwargs"]
+				assert.False(t, ok, "chat_template_kwargs should not exist")
+			}
+
+			if tt.expectFormat {
+				_, ok := result["response_format"]
+				assert.True(t, ok, "response_format should exist")
+			}
+		})
+	}
+}
+
+// TestOllamaChatRequestWithThink tests parsing OllamaChatRequest with think parameter
+func TestOllamaChatRequestWithThink(t *testing.T) {
+	tests := []struct {
+		name        string
+		requestJSON string
+		expectThink *bool
+	}{
+		{
+			name:        "think=true",
+			requestJSON: `{"model": "test-model", "messages": [], "think": true}`,
+			expectThink: boolPtr(true),
+		},
+		{
+			name:        "think=false",
+			requestJSON: `{"model": "test-model", "messages": [], "think": false}`,
+			expectThink: boolPtr(false),
+		},
+		{
+			name:        "no think parameter",
+			requestJSON: `{"model": "test-model", "messages": []}`,
+			expectThink: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var req OllamaChatRequest
+			err := json.Unmarshal([]byte(tt.requestJSON), &req)
+			assert.NoError(t, err)
+			assert.Equal(t, "test-model", req.Model)
+
+			if tt.expectThink == nil {
+				assert.Nil(t, req.Think)
+			} else {
+				assert.NotNil(t, req.Think)
+				assert.Equal(t, *tt.expectThink, *req.Think)
+			}
+		})
+	}
+}
