@@ -500,6 +500,119 @@ func TestCreateOpenAIRequestBodyWithThink(t *testing.T) {
 	}
 }
 
+// TestReasoningContentToThinking tests that OpenAI reasoning_content is mapped to Ollama thinking field
+func TestReasoningContentToThinking(t *testing.T) {
+	tests := []struct {
+		name                    string
+		openAIResponse          string
+		expectedThinking        string
+		expectedContent         string
+		shouldHaveThinkingField bool
+	}{
+		{
+			name: "response with reasoning_content",
+			openAIResponse: `{
+				"id": "test",
+				"object": "chat.completion",
+				"created": 1234567890,
+				"model": "test-model",
+				"choices": [{
+					"index": 0,
+					"message": {
+						"role": "assistant",
+						"content": "The answer is 4.",
+						"reasoning_content": "Let me think about this... 2 + 2 = 4."
+					},
+					"finish_reason": "stop"
+				}],
+				"usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
+			}`,
+			expectedThinking:        "Let me think about this... 2 + 2 = 4.",
+			expectedContent:         "The answer is 4.",
+			shouldHaveThinkingField: true,
+		},
+		{
+			name: "response without reasoning_content",
+			openAIResponse: `{
+				"id": "test",
+				"object": "chat.completion",
+				"created": 1234567890,
+				"model": "test-model",
+				"choices": [{
+					"index": 0,
+					"message": {
+						"role": "assistant",
+						"content": "The answer is 4."
+					},
+					"finish_reason": "stop"
+				}],
+				"usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
+			}`,
+			expectedThinking:        "",
+			expectedContent:         "The answer is 4.",
+			shouldHaveThinkingField: false,
+		},
+		{
+			name: "response with empty reasoning_content",
+			openAIResponse: `{
+				"id": "test",
+				"object": "chat.completion",
+				"created": 1234567890,
+				"model": "test-model",
+				"choices": [{
+					"index": 0,
+					"message": {
+						"role": "assistant",
+						"content": "Quick answer.",
+						"reasoning_content": ""
+					},
+					"finish_reason": "stop"
+				}],
+				"usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
+			}`,
+			expectedThinking:        "",
+			expectedContent:         "Quick answer.",
+			shouldHaveThinkingField: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var openAIResp OpenAIChatCompletionResponse
+			err := json.Unmarshal([]byte(tt.openAIResponse), &openAIResp)
+			assert.NoError(t, err)
+			assert.Len(t, openAIResp.Choices, 1)
+
+			choice := openAIResp.Choices[0]
+			message := OllamaMessage{
+				Role:     openAIRoleToOllama(choice.Message.Role),
+				Content:  choice.Message.Content,
+				Thinking: choice.Message.ReasoningContent,
+			}
+
+			assert.Equal(t, tt.expectedContent, message.Content)
+			assert.Equal(t, tt.expectedThinking, message.Thinking)
+
+			// Verify JSON serialization only includes thinking field when non-empty
+			jsonBytes, err := json.Marshal(message)
+			assert.NoError(t, err)
+
+			var result map[string]interface{}
+			err = json.Unmarshal(jsonBytes, &result)
+			assert.NoError(t, err)
+
+			if tt.shouldHaveThinkingField {
+				thinking, ok := result["thinking"]
+				assert.True(t, ok, "thinking field should be present in JSON")
+				assert.Equal(t, tt.expectedThinking, thinking)
+			} else {
+				_, ok := result["thinking"]
+				assert.False(t, ok, "thinking field should be omitted when empty")
+			}
+		})
+	}
+}
+
 // TestOllamaChatRequestWithThink tests parsing OllamaChatRequest with think parameter
 func TestOllamaChatRequestWithThink(t *testing.T) {
 	tests := []struct {

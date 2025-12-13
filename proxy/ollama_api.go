@@ -362,8 +362,9 @@ func (trw *transformingResponseWriter) Flush() {
 					if len(openAIChatChunk.Choices) > 0 {
 						choice := openAIChatChunk.Choices[0]
 						message := OllamaMessage{
-							Role:    openAIRoleToOllama(choice.Delta.Role),
-							Content: choice.Delta.Content,
+							Role:     openAIRoleToOllama(choice.Delta.Role),
+							Content:  choice.Delta.Content,
+							Thinking: choice.Delta.ReasoningContent,
 						}
 
 						// Handle tool calls in streaming response - ACCUMULATE instead of immediate output
@@ -608,8 +609,9 @@ func (pm *ProxyManager) ollamaChatHandler() gin.HandlerFunc {
 
 			choice := openAIResp.Choices[0]
 			message := OllamaMessage{
-				Role:    openAIRoleToOllama(choice.Message.Role),
-				Content: choice.Message.Content,
+				Role:     openAIRoleToOllama(choice.Message.Role),
+				Content:  choice.Message.Content,
+				Thinking: choice.Message.ReasoningContent,
 			}
 
 			// Handle tool calls in the response
@@ -1073,6 +1075,7 @@ type OllamaToolCallFunc struct {
 type OllamaMessage struct {
 	Role       string           `json:"role"`
 	Content    string           `json:"content"`
+	Thinking   string           `json:"thinking,omitempty"` // Reasoning trace for thinking models (from OpenAI reasoning_content)
 	Images     []string         `json:"images,omitempty"`
 	ToolCalls  []OllamaToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string           `json:"tool_call_id,omitempty"` // For tool role messages (OpenAI style)
@@ -1211,9 +1214,10 @@ type OllamaLegacyEmbeddingsResponse struct {
 
 // OpenAIChatCompletionStreamChoiceDelta is part of an OpenAI stream event.
 type OpenAIChatCompletionStreamChoiceDelta struct {
-	Content   string                      `json:"content,omitempty"`
-	Role      string                      `json:"role,omitempty"`
-	ToolCalls []OpenAIStreamToolCallDelta `json:"tool_calls,omitempty"`
+	Content          string                      `json:"content,omitempty"`
+	ReasoningContent string                      `json:"reasoning_content,omitempty"` // For thinking/reasoning models
+	Role             string                      `json:"role,omitempty"`
+	ToolCalls        []OpenAIStreamToolCallDelta `json:"tool_calls,omitempty"`
 }
 
 // OpenAIStreamToolCallDelta represents a tool call delta in a streaming response
@@ -1283,9 +1287,10 @@ type OpenAIChatCompletionResponse struct {
 
 // OpenAIChatCompletionMessage is the message structure in a non-streaming OpenAI response.
 type OpenAIChatCompletionMessage struct {
-	Role      string           `json:"role"`
-	Content   string           `json:"content"`
-	ToolCalls []OpenAIToolCall `json:"tool_calls,omitempty"`
+	Role             string           `json:"role"`
+	Content          string           `json:"content"`
+	ReasoningContent string           `json:"reasoning_content,omitempty"` // For thinking/reasoning models
+	ToolCalls        []OpenAIToolCall `json:"tool_calls,omitempty"`
 }
 
 // OpenAIToolCall represents a tool call in OpenAI format
