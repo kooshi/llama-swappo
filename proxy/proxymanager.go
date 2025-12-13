@@ -639,6 +639,36 @@ func (pm *ProxyManager) proxyInferenceHandler(c *gin.Context) {
 		}
 	}
 
+	// Apply config-level chatTemplateKwargs as defaults
+	// Request-level values take precedence over config defaults
+	modelConfig := pm.config.Models[realModelName]
+	if len(modelConfig.ChatTemplateKwargs) > 0 {
+		existingKwargs := gjson.GetBytes(bodyBytes, "chat_template_kwargs")
+		if !existingKwargs.Exists() {
+			// No request-level kwargs, use config defaults directly
+			bodyBytes, err = sjson.SetBytes(bodyBytes, "chat_template_kwargs", modelConfig.ChatTemplateKwargs)
+			if err != nil {
+				pm.sendErrorResponse(c, http.StatusInternalServerError, fmt.Sprintf("error setting chat_template_kwargs from config: %s", err.Error()))
+				return
+			}
+			pm.proxyLogger.Debugf("<%s> applied config-level chatTemplateKwargs: %v", realModelName, modelConfig.ChatTemplateKwargs)
+		} else {
+			// Merge: config defaults first, then request values override
+			for key, value := range modelConfig.ChatTemplateKwargs {
+				path := "chat_template_kwargs." + key
+				// Only set if not already present in request
+				if !gjson.GetBytes(bodyBytes, path).Exists() {
+					bodyBytes, err = sjson.SetBytes(bodyBytes, path, value)
+					if err != nil {
+						pm.sendErrorResponse(c, http.StatusInternalServerError, fmt.Sprintf("error merging chat_template_kwargs.%s: %s", key, err.Error()))
+						return
+					}
+					pm.proxyLogger.Debugf("<%s> applied config default chatTemplateKwargs.%s=%v", realModelName, key, value)
+				}
+			}
+		}
+	}
+
 	// Translate Ollama's "think" parameter to llama-server's "chat_template_kwargs"
 	// This allows OpenAI API clients to control thinking mode using the Ollama convention
 	if thinkResult := gjson.GetBytes(bodyBytes, "think"); thinkResult.Exists() {
