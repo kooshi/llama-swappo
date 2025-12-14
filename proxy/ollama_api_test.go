@@ -613,6 +613,60 @@ func TestReasoningContentToThinking(t *testing.T) {
 	}
 }
 
+// TestOllamaChatHandlerSendsChatTemplateKwargs verifies that when think=true is sent
+// via the Ollama API, the request forwarded to the backend includes chat_template_kwargs
+func TestOllamaChatHandlerSendsChatTemplateKwargs(t *testing.T) {
+	// This test reproduces the bug where think=true in Ollama API doesn't result in
+	// chat_template_kwargs being sent to the llama.cpp backend
+
+	// Parse an Ollama request with think=true
+	ollamaRequestJSON := `{
+		"model": "test-model",
+		"messages": [{"role": "user", "content": "Hello"}],
+		"think": true,
+		"stream": false
+	}`
+
+	var ollamaReq OllamaChatRequest
+	err := json.Unmarshal([]byte(ollamaRequestJSON), &ollamaReq)
+	assert.NoError(t, err)
+	assert.NotNil(t, ollamaReq.Think, "Think should be parsed")
+	assert.True(t, *ollamaReq.Think, "Think should be true")
+
+	// Simulate what ollamaChatHandler does: create the OpenAI request body
+	openAIMessages := ollamaMessagesToOpenAI(ollamaReq.Messages)
+	openAITools := ollamaToolsToOpenAI(ollamaReq.Tools)
+
+	isStreaming := ollamaReq.Stream != nil && *ollamaReq.Stream
+	opts := &createOpenAIRequestBodyOptions{
+		Think:  ollamaReq.Think,
+		Format: ollamaReq.Format,
+	}
+
+	openAIReqBodyBytes, err := createOpenAIRequestBody(
+		"test-model",
+		openAIMessages,
+		isStreaming,
+		ollamaReq.Options,
+		openAITools,
+		ollamaReq.ToolChoice,
+		opts,
+	)
+	assert.NoError(t, err)
+
+	// Verify the request body contains chat_template_kwargs with enable_thinking=true
+	var requestBody map[string]interface{}
+	err = json.Unmarshal(openAIReqBodyBytes, &requestBody)
+	assert.NoError(t, err)
+
+	chatTemplateKwargs, ok := requestBody["chat_template_kwargs"].(map[string]interface{})
+	assert.True(t, ok, "chat_template_kwargs should exist in request body")
+
+	enableThinking, ok := chatTemplateKwargs["enable_thinking"].(bool)
+	assert.True(t, ok, "enable_thinking should be a bool")
+	assert.True(t, enableThinking, "enable_thinking should be true")
+}
+
 // TestOllamaChatRequestWithThink tests parsing OllamaChatRequest with think parameter
 func TestOllamaChatRequestWithThink(t *testing.T) {
 	tests := []struct {
