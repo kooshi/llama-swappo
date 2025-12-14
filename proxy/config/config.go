@@ -136,6 +136,9 @@ type Config struct {
 
 	// present aliases to /v1/models OpenAI API listing
 	IncludeAliasesInList bool `yaml:"includeAliasesInList"`
+
+	// Hot-reload settings
+	ReloadRestartModels bool `yaml:"reloadRestartModels"` // default: false
 }
 
 func (c *Config) RealModelName(search string) (string, bool) {
