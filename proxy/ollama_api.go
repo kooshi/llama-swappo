@@ -362,8 +362,9 @@ func (trw *transformingResponseWriter) Flush() {
 					if len(openAIChatChunk.Choices) > 0 {
 						choice := openAIChatChunk.Choices[0]
 						message := OllamaMessage{
-							Role:    openAIRoleToOllama(choice.Delta.Role),
-							Content: choice.Delta.Content,
+							Role:     openAIRoleToOllama(choice.Delta.Role),
+							Content:  choice.Delta.Content,
+							Thinking: choice.Delta.ReasoningContent,
 						}
 
 						// Handle tool calls in streaming response - ACCUMULATE instead of immediate output
@@ -548,7 +549,11 @@ func (pm *ProxyManager) ollamaChatHandler() gin.HandlerFunc {
 		}
 
 		isStreaming := ollamaReq.Stream != nil && *ollamaReq.Stream
-		openAIReqBodyBytes, err := createOpenAIRequestBody(modelNameToUse, openAIMessages, isStreaming, ollamaReq.Options, openAITools, ollamaReq.ToolChoice)
+		opts := &createOpenAIRequestBodyOptions{
+			Think:  ollamaReq.Think,
+			Format: ollamaReq.Format,
+		}
+		openAIReqBodyBytes, err := createOpenAIRequestBody(modelNameToUse, openAIMessages, isStreaming, ollamaReq.Options, openAITools, ollamaReq.ToolChoice, opts)
 		if err != nil {
 			pm.sendOllamaError(c, http.StatusInternalServerError, fmt.Sprintf("Error creating OpenAI request: %v", err))
 			return
@@ -604,8 +609,9 @@ func (pm *ProxyManager) ollamaChatHandler() gin.HandlerFunc {
 
 			choice := openAIResp.Choices[0]
 			message := OllamaMessage{
-				Role:    openAIRoleToOllama(choice.Message.Role),
-				Content: choice.Message.Content,
+				Role:     openAIRoleToOllama(choice.Message.Role),
+				Content:  choice.Message.Content,
+				Thinking: choice.Message.ReasoningContent,
 			}
 
 			// Handle tool calls in the response
@@ -1069,6 +1075,7 @@ type OllamaToolCallFunc struct {
 type OllamaMessage struct {
 	Role       string           `json:"role"`
 	Content    string           `json:"content"`
+	Thinking   string           `json:"thinking,omitempty"` // Reasoning trace for thinking models (from OpenAI reasoning_content)
 	Images     []string         `json:"images,omitempty"`
 	ToolCalls  []OllamaToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string           `json:"tool_call_id,omitempty"` // For tool role messages (OpenAI style)
@@ -1080,11 +1087,12 @@ type OllamaChatRequest struct {
 	Model      string                 `json:"model"`
 	Messages   []OllamaMessage        `json:"messages"`
 	Stream     *bool                  `json:"stream,omitempty"`
-	Format     string                 `json:"format,omitempty"`
+	Format     interface{}            `json:"format,omitempty"` // string "json" or JSON Schema object
 	KeepAlive  interface{}            `json:"keep_alive,omitempty"`
 	Options    map[string]interface{} `json:"options,omitempty"`
 	Tools      []OllamaTool           `json:"tools,omitempty"`
 	ToolChoice interface{}            `json:"tool_choice,omitempty"`
+	Think      *bool                  `json:"think,omitempty"` // Enable/disable thinking mode for reasoning models
 }
 
 // OllamaChatResponse is the response from /api/chat.
@@ -1206,9 +1214,10 @@ type OllamaLegacyEmbeddingsResponse struct {
 
 // OpenAIChatCompletionStreamChoiceDelta is part of an OpenAI stream event.
 type OpenAIChatCompletionStreamChoiceDelta struct {
-	Content   string                      `json:"content,omitempty"`
-	Role      string                      `json:"role,omitempty"`
-	ToolCalls []OpenAIStreamToolCallDelta `json:"tool_calls,omitempty"`
+	Content          string                      `json:"content,omitempty"`
+	ReasoningContent string                      `json:"reasoning_content,omitempty"` // For thinking/reasoning models
+	Role             string                      `json:"role,omitempty"`
+	ToolCalls        []OpenAIStreamToolCallDelta `json:"tool_calls,omitempty"`
 }
 
 // OpenAIStreamToolCallDelta represents a tool call delta in a streaming response
@@ -1278,9 +1287,10 @@ type OpenAIChatCompletionResponse struct {
 
 // OpenAIChatCompletionMessage is the message structure in a non-streaming OpenAI response.
 type OpenAIChatCompletionMessage struct {
-	Role      string           `json:"role"`
-	Content   string           `json:"content"`
-	ToolCalls []OpenAIToolCall `json:"tool_calls,omitempty"`
+	Role             string           `json:"role"`
+	Content          string           `json:"content"`
+	ReasoningContent string           `json:"reasoning_content,omitempty"` // For thinking/reasoning models
+	ToolCalls        []OpenAIToolCall `json:"tool_calls,omitempty"`
 }
 
 // OpenAIToolCall represents a tool call in OpenAI format
@@ -1432,7 +1442,13 @@ func ollamaToolsToOpenAI(ollamaTools []OllamaTool) []map[string]interface{} {
 	return openAITools
 }
 
-func createOpenAIRequestBody(modelName string, messages []map[string]interface{}, stream bool, options map[string]interface{}, tools []map[string]interface{}, toolChoice interface{}) ([]byte, error) {
+// createOpenAIRequestBodyOptions holds optional parameters for createOpenAIRequestBody
+type createOpenAIRequestBodyOptions struct {
+	Think  *bool       // Ollama think parameter -> chat_template_kwargs.enable_thinking
+	Format interface{} // Ollama format parameter (string "json" or JSON Schema object)
+}
+
+func createOpenAIRequestBody(modelName string, messages []map[string]interface{}, stream bool, options map[string]interface{}, tools []map[string]interface{}, toolChoice interface{}, opts *createOpenAIRequestBodyOptions) ([]byte, error) {
 	requestBody := map[string]interface{}{
 		"model":    modelName,
 		"messages": messages,
@@ -1451,6 +1467,35 @@ func createOpenAIRequestBody(modelName string, messages []map[string]interface{}
 		for k, v := range options {
 			if _, exists := requestBody[k]; !exists {
 				requestBody[k] = v
+			}
+		}
+	}
+
+	// Handle Ollama-specific options
+	if opts != nil {
+		// Translate Ollama's think parameter to llama-server's chat_template_kwargs
+		if opts.Think != nil {
+			requestBody["chat_template_kwargs"] = map[string]interface{}{
+				"enable_thinking": *opts.Think,
+			}
+		}
+
+		// Handle format parameter
+		if opts.Format != nil {
+			switch f := opts.Format.(type) {
+			case string:
+				// Simple "json" format
+				if f == "json" {
+					requestBody["response_format"] = map[string]interface{}{
+						"type": "json_object",
+					}
+				}
+			case map[string]interface{}:
+				// JSON Schema object for structured outputs
+				requestBody["response_format"] = map[string]interface{}{
+					"type":   "json_schema",
+					"schema": f,
+				}
 			}
 		}
 	}

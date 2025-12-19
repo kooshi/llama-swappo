@@ -17,6 +17,11 @@ This commit automatically rebases onto the latest llama-swap nightly.
   - `api/chat` (untested)
   - `api/embed`
   - `api/embeddings`
+- ✅ Enhanced Ollama API translation:
+  - Tool calling support (translates Ollama tool calls to/from OpenAI format)
+  - `think` parameter for extended thinking models (maps to OpenAI `reasoning_effort`)
+  - Structured outputs via `format` parameter (JSON schema support)
+  - Reasoning content mapping (OpenAI `reasoning_content` ↔ Ollama `thinking` field)
 
 ## How to install
 Use the original [Building from source](#building-from-source) instructions, and overwrite your installed llama-swap executable with the newly built one.
