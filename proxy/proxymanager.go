@@ -660,6 +660,62 @@ func (pm *ProxyManager) proxyInferenceHandler(c *gin.Context) {
 		}
 	}
 
+	// Apply config-level chatTemplateKwargs as defaults
+	// Request-level values take precedence over config defaults
+	modelConfig := pm.config.Models[realModelName]
+	if len(modelConfig.ChatTemplateKwargs) > 0 {
+		existingKwargs := gjson.GetBytes(bodyBytes, "chat_template_kwargs")
+		if !existingKwargs.Exists() {
+			// No request-level kwargs, use config defaults directly
+			bodyBytes, err = sjson.SetBytes(bodyBytes, "chat_template_kwargs", modelConfig.ChatTemplateKwargs)
+			if err != nil {
+				pm.sendErrorResponse(c, http.StatusInternalServerError, fmt.Sprintf("error setting chat_template_kwargs from config: %s", err.Error()))
+				return
+			}
+			pm.proxyLogger.Debugf("<%s> applied config-level chatTemplateKwargs: %v", realModelName, modelConfig.ChatTemplateKwargs)
+		} else {
+			// Merge: config defaults first, then request values override
+			for key, value := range modelConfig.ChatTemplateKwargs {
+				path := "chat_template_kwargs." + key
+				// Only set if not already present in request
+				if !gjson.GetBytes(bodyBytes, path).Exists() {
+					bodyBytes, err = sjson.SetBytes(bodyBytes, path, value)
+					if err != nil {
+						pm.sendErrorResponse(c, http.StatusInternalServerError, fmt.Sprintf("error merging chat_template_kwargs.%s: %s", key, err.Error()))
+						return
+					}
+					pm.proxyLogger.Debugf("<%s> applied config default chatTemplateKwargs.%s=%v", realModelName, key, value)
+				}
+			}
+		}
+	}
+
+	// Translate Ollama's "think" parameter to llama-server's "chat_template_kwargs"
+	// This allows OpenAI API clients to control thinking mode using the Ollama convention
+	if thinkResult := gjson.GetBytes(bodyBytes, "think"); thinkResult.Exists() {
+		thinkValue := thinkResult.Bool()
+		// Check if chat_template_kwargs already exists
+		if !gjson.GetBytes(bodyBytes, "chat_template_kwargs").Exists() {
+			bodyBytes, err = sjson.SetBytes(bodyBytes, "chat_template_kwargs", map[string]interface{}{
+				"enable_thinking": thinkValue,
+			})
+			if err != nil {
+				pm.sendErrorResponse(c, http.StatusInternalServerError, fmt.Sprintf("error setting chat_template_kwargs: %s", err.Error()))
+				return
+			}
+		} else {
+			// Merge with existing chat_template_kwargs
+			bodyBytes, err = sjson.SetBytes(bodyBytes, "chat_template_kwargs.enable_thinking", thinkValue)
+			if err != nil {
+				pm.sendErrorResponse(c, http.StatusInternalServerError, fmt.Sprintf("error setting enable_thinking: %s", err.Error()))
+				return
+			}
+		}
+		// Remove the original "think" parameter as llama-server doesn't understand it
+		bodyBytes, _ = sjson.DeleteBytes(bodyBytes, "think")
+		pm.proxyLogger.Debugf("<%s> translated think=%v to chat_template_kwargs.enable_thinking", realModelName, thinkValue)
+	}
+
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
 	// dechunk it as we already have all the body bytes see issue #11
