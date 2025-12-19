@@ -72,3 +72,35 @@ models:
 		assert.True(t, *config.Models["model2"].SendLoadingState)
 	}
 }
+
+func TestConfig_ChatTemplateKwargs(t *testing.T) {
+	content := `
+models:
+  qwen3-thinking:
+    cmd: path/to/cmd --port ${PORT}
+    chatTemplateKwargs:
+      enable_thinking: true
+  qwen3-no-thinking:
+    cmd: path/to/cmd --port ${PORT}
+    chatTemplateKwargs:
+      enable_thinking: false
+  model-no-kwargs:
+    cmd: path/to/cmd --port ${PORT}
+`
+	config, err := LoadConfigFromReader(strings.NewReader(content))
+	assert.NoError(t, err)
+
+	// Model with enable_thinking: true
+	kwargs1 := config.Models["qwen3-thinking"].ChatTemplateKwargs
+	assert.NotNil(t, kwargs1)
+	assert.Equal(t, true, kwargs1["enable_thinking"])
+
+	// Model with enable_thinking: false
+	kwargs2 := config.Models["qwen3-no-thinking"].ChatTemplateKwargs
+	assert.NotNil(t, kwargs2)
+	assert.Equal(t, false, kwargs2["enable_thinking"])
+
+	// Model without chatTemplateKwargs
+	kwargs3 := config.Models["model-no-kwargs"].ChatTemplateKwargs
+	assert.Nil(t, kwargs3)
+}
