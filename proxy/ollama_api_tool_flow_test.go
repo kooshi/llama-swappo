@@ -694,7 +694,8 @@ func TestStreamingToolCallAccumulation(t *testing.T) {
 		body := w.Body.String()
 		lines := bytes.Split([]byte(body), []byte("\n"))
 
-		var finalResp *OllamaChatResponse
+		var toolCallResp *OllamaChatResponse
+		var doneResp *OllamaChatResponse
 		toolCallChunks := 0
 
 		for _, line := range lines {
@@ -708,36 +709,47 @@ func TestStreamingToolCallAccumulation(t *testing.T) {
 				continue
 			}
 
-			// Count chunks that have tool calls (should only be the final one)
+			// Count chunks that have tool calls (should only appear once)
 			if len(resp.Message.ToolCalls) > 0 {
 				toolCallChunks++
-				finalResp = &resp
+				respCopy := resp
+				toolCallResp = &respCopy
+			}
+			// Track the final done:true chunk
+			if resp.Done {
+				respCopy := resp
+				doneResp = &respCopy
 			}
 		}
 
-		// Key assertion: tool calls should only appear ONCE in the final chunk
+		// Key assertion: tool calls should only appear ONCE
 		// Not in every intermediate chunk
-		assert.Equal(t, 1, toolCallChunks, "Tool calls should only appear in final chunk, not streamed incrementally")
+		assert.Equal(t, 1, toolCallChunks, "Tool calls should only appear once, not streamed incrementally")
 
 		// Verify the accumulated tool calls are complete and correct
-		require.NotNil(t, finalResp, "Should have a final response with tool calls")
-		require.Len(t, finalResp.Message.ToolCalls, 2, "Should have 2 accumulated tool calls")
+		require.NotNil(t, toolCallResp, "Should have a response with tool calls")
+		require.Len(t, toolCallResp.Message.ToolCalls, 2, "Should have 2 accumulated tool calls")
 
 		// First tool call
-		tc1 := finalResp.Message.ToolCalls[0]
+		tc1 := toolCallResp.Message.ToolCalls[0]
 		assert.Equal(t, "call_abc123", tc1.ID)
 		assert.Equal(t, "get_weather", tc1.Function.Name)
 		assert.Equal(t, "Boston", tc1.Function.Arguments["location"])
 
 		// Second tool call
-		tc2 := finalResp.Message.ToolCalls[1]
+		tc2 := toolCallResp.Message.ToolCalls[1]
 		assert.Equal(t, "call_def456", tc2.ID)
 		assert.Equal(t, "get_time", tc2.Function.Name)
 		assert.Equal(t, "EST", tc2.Function.Arguments["timezone"])
 
-		// Verify the response is marked as done
-		assert.True(t, finalResp.Done)
-		assert.Equal(t, "tool_calls", finalResp.DoneReason)
+		// Ollama-compatible: tool_calls chunk has done:false
+		assert.False(t, toolCallResp.Done, "Chunk with tool_calls should have done:false")
+		assert.Equal(t, "tool_calls", toolCallResp.DoneReason)
+
+		// Verify there's a separate done:true chunk
+		require.NotNil(t, doneResp, "Should have a final done:true chunk")
+		assert.True(t, doneResp.Done)
+		assert.Empty(t, doneResp.Message.ToolCalls, "Final done:true chunk should not have tool_calls")
 	})
 }
 
@@ -878,11 +890,11 @@ func TestStreamingChatResponses(t *testing.T) {
 
 		assert.Equal(t, http.StatusOK, w.Code)
 
-		// Find the final response with tool calls
+		// Find the response with tool calls (Ollama-compat: done:false)
 		body := w.Body.String()
 		lines := bytes.Split([]byte(body), []byte("\n"))
 
-		var finalResp *OllamaChatResponse
+		var toolCallResp *OllamaChatResponse
 		for _, line := range lines {
 			line = bytes.TrimSpace(line)
 			if len(line) == 0 {
@@ -892,16 +904,19 @@ func TestStreamingChatResponses(t *testing.T) {
 			if err := json.Unmarshal(line, &resp); err != nil {
 				continue
 			}
-			if resp.Done && len(resp.Message.ToolCalls) > 0 {
-				finalResp = &resp
+			if len(resp.Message.ToolCalls) > 0 {
+				respCopy := resp
+				toolCallResp = &respCopy
 			}
 		}
 
-		require.NotNil(t, finalResp, "Should have final response with tool calls")
-		require.Len(t, finalResp.Message.ToolCalls, 1)
-		assert.Equal(t, "call_1", finalResp.Message.ToolCalls[0].ID)
-		assert.Equal(t, "get_weather", finalResp.Message.ToolCalls[0].Function.Name)
-		assert.Equal(t, "NYC", finalResp.Message.ToolCalls[0].Function.Arguments["city"])
+		require.NotNil(t, toolCallResp, "Should have response with tool calls")
+		require.Len(t, toolCallResp.Message.ToolCalls, 1)
+		assert.Equal(t, "call_1", toolCallResp.Message.ToolCalls[0].ID)
+		assert.Equal(t, "get_weather", toolCallResp.Message.ToolCalls[0].Function.Name)
+		assert.Equal(t, "NYC", toolCallResp.Message.ToolCalls[0].Function.Arguments["city"])
+		// Ollama-compat: tool_calls chunk has done:false
+		assert.False(t, toolCallResp.Done, "Tool calls chunk should have done:false")
 	})
 
 	t.Run("StreamingWithHallucinatedToolCallsFiltered", func(t *testing.T) {
@@ -959,11 +974,11 @@ func TestStreamingChatResponses(t *testing.T) {
 
 		assert.Equal(t, http.StatusOK, w.Code)
 
-		// Find final response
+		// Find response with tool calls (Ollama-compat: done:false)
 		body := w.Body.String()
 		lines := bytes.Split([]byte(body), []byte("\n"))
 
-		var finalResp *OllamaChatResponse
+		var toolCallResp *OllamaChatResponse
 		for _, line := range lines {
 			line = bytes.TrimSpace(line)
 			if len(line) == 0 {
@@ -973,14 +988,129 @@ func TestStreamingChatResponses(t *testing.T) {
 			if err := json.Unmarshal(line, &resp); err != nil {
 				continue
 			}
-			if resp.Done && len(resp.Message.ToolCalls) > 0 {
-				finalResp = &resp
+			if len(resp.Message.ToolCalls) > 0 {
+				respCopy := resp
+				toolCallResp = &respCopy
 			}
 		}
 
-		require.NotNil(t, finalResp)
+		require.NotNil(t, toolCallResp)
 		// Should only have the valid tool call, empty one filtered
-		require.Len(t, finalResp.Message.ToolCalls, 1, "Hallucinated empty tool call should be filtered")
-		assert.Equal(t, "search", finalResp.Message.ToolCalls[0].Function.Name)
+		require.Len(t, toolCallResp.Message.ToolCalls, 1, "Hallucinated empty tool call should be filtered")
+		assert.Equal(t, "search", toolCallResp.Message.ToolCalls[0].Function.Name)
+		// Ollama-compat: tool_calls chunk has done:false
+		assert.False(t, toolCallResp.Done, "Tool calls chunk should have done:false")
+	})
+}
+
+// TestStreamingToolCallsOllamaCompatible tests that streaming tool calls follow
+// Ollama's native format: tool_calls in a chunk with done:false, then a final
+// chunk with done:true (no tool_calls). This matches how Ollama proper behaves
+// and ensures compatibility with clients like rig that process done flag first.
+func TestStreamingToolCallsOllamaCompatible(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// Mock backend that streams tool calls like OpenAI
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		flusher := w.(http.Flusher)
+
+		chunks := []string{
+			// Tool call ID and name
+			`{"id":"chatcmpl-1","object":"chat.completion.chunk","model":"test-model","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_123","type":"function","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null}]}`,
+			// Arguments
+			`{"id":"chatcmpl-1","object":"chat.completion.chunk","model":"test-model","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"location\":\"Boston\"}"}}]},"finish_reason":null}]}`,
+			// Final chunk with finish_reason
+			`{"id":"chatcmpl-1","object":"chat.completion.chunk","model":"test-model","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		}
+
+		for _, chunk := range chunks {
+			w.Write([]byte("data: " + chunk + "\n\n"))
+			flusher.Flush()
+		}
+		w.Write([]byte("data: [DONE]\n\n"))
+		flusher.Flush()
+	}))
+	defer backend.Close()
+
+	cfg := config.Config{
+		Models: map[string]config.ModelConfig{
+			"test-model": {Cmd: "sleep 3600", Proxy: backend.URL, CheckEndpoint: "none"},
+		},
+	}
+	cfg = config.AddDefaultGroupToConfig(cfg)
+
+	pm := &ProxyManager{config: cfg, proxyLogger: testLogger, processGroups: make(map[string]*ProcessGroup)}
+	for groupID := range cfg.Groups {
+		pm.processGroups[groupID] = NewProcessGroup(groupID, cfg, testLogger, testLogger)
+	}
+
+	t.Run("ToolCallsInSeparateChunkBeforeDone", func(t *testing.T) {
+		reqBody := `{
+			"model": "test-model",
+			"stream": true,
+			"messages": [{"role": "user", "content": "weather?"}],
+			"tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}]
+		}`
+		httpReq := httptest.NewRequest("POST", "/api/chat", bytes.NewBufferString(reqBody))
+		httpReq.Header.Set("Content-Type", "application/json")
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httpReq
+
+		pm.ollamaChatHandler()(c)
+
+		assert.Equal(t, http.StatusOK, w.Code)
+
+		// Parse all chunks
+		body := w.Body.String()
+		lines := bytes.Split([]byte(body), []byte("\n"))
+
+		var allResponses []OllamaChatResponse
+		for _, line := range lines {
+			line = bytes.TrimSpace(line)
+			if len(line) == 0 {
+				continue
+			}
+			var resp OllamaChatResponse
+			if err := json.Unmarshal(line, &resp); err != nil {
+				continue
+			}
+			allResponses = append(allResponses, resp)
+		}
+
+		require.GreaterOrEqual(t, len(allResponses), 2, "Should have at least 2 chunks")
+
+		// Find the chunk with tool_calls and the final done chunk
+		var toolCallChunk *OllamaChatResponse
+		var finalChunk *OllamaChatResponse
+
+		for i := range allResponses {
+			resp := &allResponses[i]
+			if len(resp.Message.ToolCalls) > 0 {
+				toolCallChunk = resp
+			}
+			if resp.Done {
+				finalChunk = resp
+			}
+		}
+
+		// KEY ASSERTION: Tool calls should be in a chunk with done:false
+		require.NotNil(t, toolCallChunk, "Should have a chunk with tool_calls")
+		assert.False(t, toolCallChunk.Done, "Chunk with tool_calls should have done:false (Ollama-compatible)")
+		assert.Equal(t, "tool_calls", toolCallChunk.DoneReason, "Should have done_reason even with done:false")
+
+		// Verify tool call content
+		require.Len(t, toolCallChunk.Message.ToolCalls, 1)
+		assert.Equal(t, "call_123", toolCallChunk.Message.ToolCalls[0].ID)
+		assert.Equal(t, "get_weather", toolCallChunk.Message.ToolCalls[0].Function.Name)
+		assert.Equal(t, "Boston", toolCallChunk.Message.ToolCalls[0].Function.Arguments["location"])
+
+		// KEY ASSERTION: Final chunk should have done:true but NO tool_calls
+		require.NotNil(t, finalChunk, "Should have a final chunk with done:true")
+		assert.True(t, finalChunk.Done, "Final chunk should have done:true")
+		assert.Empty(t, finalChunk.Message.ToolCalls, "Final done:true chunk should NOT contain tool_calls")
 	})
 }
