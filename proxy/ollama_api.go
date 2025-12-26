@@ -394,6 +394,7 @@ func (trw *transformingResponseWriter) Flush() {
 						}
 
 						// On final chunk, emit accumulated tool calls
+						// Ollama-compatible: emit tool_calls with done:false, then final done:true chunk
 						if choice.FinishReason != "" && len(trw.toolCallBuffer) > 0 {
 							ollamaToolCalls := make([]OllamaToolCall, 0, len(trw.toolCallBuffer))
 
@@ -424,27 +425,58 @@ func (trw *transformingResponseWriter) Flush() {
 									},
 								})
 							}
+
 							if len(ollamaToolCalls) > 0 {
-								message.ToolCalls = ollamaToolCalls
+								// Emit tool calls chunk with done:false (Ollama-compatible)
+								toolCallMessage := message
+								toolCallMessage.ToolCalls = ollamaToolCalls
+								toolCallResp := OllamaChatResponse{
+									Model:      trw.modelName,
+									CreatedAt:  time.Now().UTC(),
+									Message:    toolCallMessage,
+									Done:       false, // Tool calls come with done:false
+									DoneReason: openAIFinishReasonToOllama(choice.FinishReason),
+								}
+								if toolCallResp.Message.Role == "" {
+									toolCallResp.Message.Role = "assistant"
+								}
+								toolCallJSON, _ := json.Marshal(toolCallResp)
+								processedBuffer.Write(toolCallJSON)
+								processedBuffer.WriteString("\n")
+
+								// Now emit final done:true chunk (no tool_calls)
+								finalResp := OllamaChatResponse{
+									Model:      trw.modelName,
+									CreatedAt:  time.Now().UTC(),
+									Message:    OllamaMessage{Role: "assistant"},
+									Done:       true,
+									DoneReason: openAIFinishReasonToOllama(choice.FinishReason),
+								}
+								if openAIChatChunk.Usage != nil {
+									finalResp.PromptEvalCount = openAIChatChunk.Usage.PromptTokens
+									finalResp.EvalCount = openAIChatChunk.Usage.CompletionTokens
+								}
+								ollamaChunkJSON, err = json.Marshal(finalResp)
 							}
-						}
+						} else {
+							// Normal case: no tool calls, just emit the chunk as-is
+							ollamaResp := OllamaChatResponse{
+								Model:      trw.modelName,
+								CreatedAt:  time.Now().UTC(),
+								Message:    message,
+								Done:       choice.FinishReason != "",
+								DoneReason: openAIFinishReasonToOllama(choice.FinishReason),
+							}
+							if choice.Delta.Role == "" && ollamaResp.Message.Role == "" {
+								ollamaResp.Message.Role = "assistant"
+							}
+							if openAIChatChunk.Usage != nil {
+								ollamaResp.PromptEvalCount = openAIChatChunk.Usage.PromptTokens
+								ollamaResp.EvalCount = openAIChatChunk.Usage.CompletionTokens
+							}
 
-						ollamaResp := OllamaChatResponse{
-							Model:      trw.modelName,
-							CreatedAt:  time.Now().UTC(),
-							Message:    message,
-							Done:       choice.FinishReason != "",
-							DoneReason: openAIFinishReasonToOllama(choice.FinishReason),
+							ollamaChunkJSON, err = json.Marshal(ollamaResp)
 						}
-						if choice.Delta.Role == "" && ollamaResp.Message.Role == "" {
-							ollamaResp.Message.Role = "assistant"
-						}
-						if openAIChatChunk.Usage != nil {
-							ollamaResp.PromptEvalCount = openAIChatChunk.Usage.PromptTokens
-							ollamaResp.EvalCount = openAIChatChunk.Usage.CompletionTokens
-						}
-
-						ollamaChunkJSON, err = json.Marshal(ollamaResp)
 					}
 				}
 			} else { // /api/generate
