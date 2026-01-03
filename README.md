@@ -4,7 +4,7 @@ A fork of llama-swap with a minimally implemented ollama compatible api grafted 
 
 This makes llama-swappo a drop in replacement for ollama, for enthusiests that want more control, with more compatability.
 
-This commit automatically rebases onto the latest llama-swap nightly.
+These commits automatically rebase onto the latest llama-swap nightly.
 
 ## Features
 
@@ -25,6 +25,10 @@ This commit automatically rebases onto the latest llama-swap nightly.
 
 ## How to install
 Use the original [Building from source](#building-from-source) instructions, and overwrite your installed llama-swap executable with the newly built one.
+
+## How to update
+The easiest way to update is to `git fetch && git reset --hard origin/master`.
+Because the changes in this repo are always rebased on top of llama-swap, `git pull` won't work.
 
 ## Configuration
 

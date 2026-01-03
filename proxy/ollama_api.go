@@ -60,7 +60,7 @@ func (pm *ProxyManager) ollamaVersionHandler() gin.HandlerFunc {
 		if origin := c.Request.Header.Get("Origin"); origin != "" {
 			c.Header("Access-Control-Allow-Origin", origin)
 		}
-		c.JSON(http.StatusOK, OllamaVersionResponse{Version: "0.0.0"})
+		c.JSON(http.StatusOK, OllamaVersionResponse{Version: "0.13.5"}) // Some clients expect a real version
 	}
 }
 
@@ -561,7 +561,8 @@ func (pm *ProxyManager) ollamaChatHandler() gin.HandlerFunc {
 			return
 		}
 
-		pg, realModelName, err := pm.swapProcessGroup(ollamaReq.Model)
+		pg, err := pm.swapProcessGroup(ollamaReq.Model)
+		realModelName := ollamaReq.Model
 		if err != nil {
 			pm.sendOllamaError(c, http.StatusInternalServerError, fmt.Sprintf("Error selecting model process: %v", err))
 			return
@@ -702,7 +703,8 @@ func (pm *ProxyManager) ollamaGenerateHandler() gin.HandlerFunc {
 			return
 		}
 
-		pg, realModelName, err := pm.swapProcessGroup(ollamaReq.Model)
+		pg, err := pm.swapProcessGroup(ollamaReq.Model)
+		realModelName := ollamaReq.Model
 		if err != nil {
 			pm.sendOllamaError(c, http.StatusInternalServerError, fmt.Sprintf("Error selecting model process: %v", err))
 			return
@@ -820,7 +822,8 @@ func (pm *ProxyManager) ollamaEmbedHandler() gin.HandlerFunc {
 			return
 		}
 
-		pg, realModelName, err := pm.swapProcessGroup(req.Model)
+		pg, err := pm.swapProcessGroup(req.Model)
+		realModelName := req.Model
 		if err != nil {
 			pm.sendOllamaError(c, http.StatusInternalServerError, fmt.Sprintf("Error selecting model process: %v", err))
 			return
@@ -948,7 +951,8 @@ func (pm *ProxyManager) ollamaLegacyEmbeddingsHandler() gin.HandlerFunc {
 			return
 		}
 
-		pg, realModelName, err := pm.swapProcessGroup(req.Model)
+		pg, err := pm.swapProcessGroup(req.Model)
+		realModelName := req.Model
 		if err != nil {
 			pm.sendOllamaError(c, http.StatusInternalServerError, fmt.Sprintf("Error selecting model process: %v", err))
 			return
