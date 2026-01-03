@@ -386,7 +386,7 @@ func (pm *ProxyManager) RegisterOllamaRoutes() {
 
 	// Ollama version endpoint conflicted with llama-swap's
 	//pm.ginEngine.GET("/api/version", pm.ollamaVersionHandler())
-	//pm.ginEngine.HEAD("/api/version", pm.ollamaVersionHandler())
+	pm.ginEngine.HEAD("/api/version", pm.ollamaVersionHandler())
 
 	// Model management
 	pm.ginEngine.GET("/api/tags", pm.ollamaListTagsHandler())
@@ -746,7 +746,7 @@ func (pm *ProxyManager) proxyInferenceHandler(c *gin.Context) {
 
 	// Apply config-level chatTemplateKwargs as defaults
 	// Request-level values take precedence over config defaults
-	modelConfig := pm.config.Models[realModelName]
+	modelConfig := pm.config.Models[modelID]
 	if len(modelConfig.ChatTemplateKwargs) > 0 {
 		existingKwargs := gjson.GetBytes(bodyBytes, "chat_template_kwargs")
 		if !existingKwargs.Exists() {
@@ -756,7 +756,7 @@ func (pm *ProxyManager) proxyInferenceHandler(c *gin.Context) {
 				pm.sendErrorResponse(c, http.StatusInternalServerError, fmt.Sprintf("error setting chat_template_kwargs from config: %s", err.Error()))
 				return
 			}
-			pm.proxyLogger.Debugf("<%s> applied config-level chatTemplateKwargs: %v", realModelName, modelConfig.ChatTemplateKwargs)
+			pm.proxyLogger.Debugf("<%s> applied config-level chatTemplateKwargs: %v", modelID, modelConfig.ChatTemplateKwargs)
 		} else {
 			// Merge: config defaults first, then request values override
 			for key, value := range modelConfig.ChatTemplateKwargs {
@@ -768,7 +768,7 @@ func (pm *ProxyManager) proxyInferenceHandler(c *gin.Context) {
 						pm.sendErrorResponse(c, http.StatusInternalServerError, fmt.Sprintf("error merging chat_template_kwargs.%s: %s", key, err.Error()))
 						return
 					}
-					pm.proxyLogger.Debugf("<%s> applied config default chatTemplateKwargs.%s=%v", realModelName, key, value)
+					pm.proxyLogger.Debugf("<%s> applied config default chatTemplateKwargs.%s=%v", modelID, key, value)
 				}
 			}
 		}
@@ -797,7 +797,7 @@ func (pm *ProxyManager) proxyInferenceHandler(c *gin.Context) {
 		}
 		// Remove the original "think" parameter as llama-server doesn't understand it
 		bodyBytes, _ = sjson.DeleteBytes(bodyBytes, "think")
-		pm.proxyLogger.Debugf("<%s> translated think=%v to chat_template_kwargs.enable_thinking", realModelName, thinkValue)
+		pm.proxyLogger.Debugf("<%s> translated think=%v to chat_template_kwargs.enable_thinking", modelID, thinkValue)
 	}
 
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
@@ -1113,5 +1113,5 @@ func (pm *ProxyManager) SetVersion(buildDate string, commit string, version stri
 	defer pm.Unlock()
 	pm.buildDate = buildDate
 	pm.commit = commit
-	pm.version = version
+	pm.version = "0.13.5" //HACK to mimic ollama's API, since upstream API conflicts
 }
