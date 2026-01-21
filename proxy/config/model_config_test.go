@@ -73,34 +73,34 @@ models:
 	}
 }
 
-func TestConfig_ChatTemplateKwargs(t *testing.T) {
+func TestConfig_ModelFiltersWithSetParams(t *testing.T) {
 	content := `
 models:
-  qwen3-thinking:
+  model1:
     cmd: path/to/cmd --port ${PORT}
-    chatTemplateKwargs:
-      enable_thinking: true
-  qwen3-no-thinking:
-    cmd: path/to/cmd --port ${PORT}
-    chatTemplateKwargs:
-      enable_thinking: false
-  model-no-kwargs:
-    cmd: path/to/cmd --port ${PORT}
+    filters:
+      stripParams: "top_k"
+      setParams:
+        temperature: 0.7
+        top_p: 0.9
+        stop:
+          - "<|end|>"
+          - "<|stop|>"
 `
 	config, err := LoadConfigFromReader(strings.NewReader(content))
 	assert.NoError(t, err)
 
-	// Model with enable_thinking: true
-	kwargs1 := config.Models["qwen3-thinking"].ChatTemplateKwargs
-	assert.NotNil(t, kwargs1)
-	assert.Equal(t, true, kwargs1["enable_thinking"])
+	modelConfig := config.Models["model1"]
 
-	// Model with enable_thinking: false
-	kwargs2 := config.Models["qwen3-no-thinking"].ChatTemplateKwargs
-	assert.NotNil(t, kwargs2)
-	assert.Equal(t, false, kwargs2["enable_thinking"])
+	// Check stripParams
+	stripParams, err := modelConfig.Filters.SanitizedStripParams()
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"top_k"}, stripParams)
 
-	// Model without chatTemplateKwargs
-	kwargs3 := config.Models["model-no-kwargs"].ChatTemplateKwargs
-	assert.Nil(t, kwargs3)
+	// Check setParams
+	setParams, keys := modelConfig.Filters.SanitizedSetParams()
+	assert.NotNil(t, setParams)
+	assert.Equal(t, []string{"stop", "temperature", "top_p"}, keys)
+	assert.Equal(t, 0.7, setParams["temperature"])
+	assert.Equal(t, 0.9, setParams["top_p"])
 }

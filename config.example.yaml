@@ -70,16 +70,6 @@ sendLoadingState: true
 #   all fields except for Id so chat UIs can use the alias equivalent to the original.
 includeAliasesInList: false
 
-# apiKeys: require an API key when making requests to inference endpoints
-# - optional, default: []
-# - when empty (the default) authorization will not be checked as llama-swap is default-allow
-# - each key is a non-empty string
-apiKeys:
-  - "sk-hunter2"
-  # hint, one liner: printf "sk-%s\n" "$(head -c 48 /dev/urandom | base64 )"
-  - "sk-gyCPiKUcIfPlaM4OSMZekkprgijPx6+OsmQs8Rsg0xZ9qpy6gKWsIKqHOk+cgXVx"
-  - "sk-+QtIn0Zjj4UHjiaZYiZEnru4mrwKM9RzhmJeK5SobNXLl8QMFXxGz1/2lEuvQpkb"
-
 # macros: a dictionary of string substitutions
 # - optional, default: empty dictionary
 # - macros are reusable snippets
@@ -90,6 +80,9 @@ apiKeys:
 # - macro names must not be a reserved name: PORT or MODEL_ID
 # - macro values can be numbers, bools, or strings
 # - macros can contain other macros, but they must be defined before they are used
+# - environment variables can be referenced with ${env.VAR_NAME} syntax
+#   - env macros are substituted first, before regular macros
+#   - if the env var is not set, config loading will fail with an error
 macros:
   # Example of a multi-line macro
   "latest-llama": >
@@ -101,6 +94,24 @@ macros:
   # Example of macro-in-macro usage. macros can contain other macros
   # but they must be previously declared.
   "default_args": "--ctx-size ${default_ctx}"
+
+  # Example of environment variable macros
+  # - ${env.VAR_NAME} pulls the value from the system environment
+  # - useful for paths, secrets, or machine-specific configuration
+  "models_dir": "${env.HOME}/models"
+
+# apiKeys: require an API key when making requests to inference endpoints
+# - optional, default: []
+# - when empty (the default) authorization will not be checked as llama-swap is default-allow
+# - each key is a non-empty string
+apiKeys:
+  - "sk-hunter2"
+  # tip, one liner: printf "sk-%s\n" "$(head -c 48 /dev/urandom | base64 )"
+  - "sk-gyCPiKUcIfPlaM4OSMZekkprgijPx6+OsmQs8Rsg0xZ9qpy6gKWsIKqHOk+cgXVx"
+
+  # use environment variable macros to keep secrets out of the config
+  - "${env.API_KEY_1}"
+  - "${env.API_KEY_2}"
 
 # models: a dictionary of model configurations
 # - required
@@ -185,7 +196,7 @@ models:
 
     # filters: a dictionary of filter settings
     # - optional, default: empty dictionary
-    # - only stripParams is currently supported
+    # - same capabilities as peer filters (stripParams, setParams)
     filters:
       # stripParams: a comma separated list of parameters to remove from the request
       # - optional, default: ""
@@ -194,6 +205,16 @@ models:
       # - can be any JSON key in the request body
       # - recommended to stick to sampling parameters
       stripParams: "temperature, top_p, top_k"
+
+      # setParams: a dictionary of parameters to set/override in requests
+      # - optional, default: empty dictionary
+      # - useful for enforcing specific parameter values
+      # - protected params like "model" cannot be overridden
+      # - values can be strings, numbers, booleans, arrays, or objects
+      setParams:
+        # Example: enforce specific sampling parameters
+        temperature: 0.7
+        top_p: 0.9
 
     # metadata: a dictionary of arbitrary values that are included in /v1/models
     # - optional, default: empty dictionary
@@ -365,7 +386,8 @@ peers:
     # - optional, default: ""
     # - if blank, no key will be added to the request
     # - key will be injected into headers: Authorization: Bearer <key> and x-api-key: <key>
-    apiKey: sk-your-openrouter-key
+    # - can be a string or a macro
+    apiKey: ${env.OPENROUTER_API_KEY}
     models:
       - meta-llama/llama-3.1-8b-instruct
       - qwen/qwen3-235b-a22b-2507
@@ -373,3 +395,23 @@ peers:
       - z-ai/glm-4.7
       - moonshotai/kimi-k2-0905
       - minimax/minimax-m2.1
+    # filters: a dictionary of filter settings for peer requests
+    # - optional, default: empty dictionary
+    # - same capabilities as model filters (stripParams, setParams)
+    filters:
+      # stripParams: a comma separated list of parameters to remove from the request
+      # - optional, default: ""
+      # - useful for removing parameters that the peer doesn't support
+      # - the `model` parameter can never be removed
+      stripParams: "temperature, top_p"
+
+      # setParams: a dictionary of parameters to set/override in requests to this peer
+      # - optional, default: empty dictionary
+      # - useful for injecting provider-specific settings like data retention policies
+      # - protected params like "model" cannot be overridden
+      # - values can be strings, numbers, booleans, arrays, or objects
+      setParams:
+        # Example: enforce zero-data-retention for OpenRouter
+        provider:
+          data_collection: "deny"
+          zdr: true

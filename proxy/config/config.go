@@ -87,6 +87,7 @@ type GroupConfig struct {
 var (
 	macroNameRegex    = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 	macroPatternRegex = regexp.MustCompile(`\$\{([a-zA-Z0-9_-]+)\}`)
+	envMacroRegex     = regexp.MustCompile(`\$\{env\.([a-zA-Z_][a-zA-Z0-9_]*)\}`)
 )
 
 // set default values for GroupConfig
@@ -183,8 +184,16 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	yamlStr := string(data)
 
-	// default configuration values
+	// Phase 1: Substitute all ${env.VAR} macros at string level
+	// This is safe because env values are simple strings without YAML formatting
+	yamlStr, err = substituteEnvMacros(yamlStr)
+	if err != nil {
+		return Config{}, err
+	}
+
+	// Unmarshal into full Config with defaults
 	config := Config{
 		HealthCheckTimeout: 120,
 		StartPort:          5800,
@@ -193,13 +202,11 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 		LogToStdout:        LogToStdoutProxy,
 		MetricsMaxInMemory: 1000,
 	}
-	err = yaml.Unmarshal(data, &config)
-	if err != nil {
+	if err = yaml.Unmarshal([]byte(yamlStr), &config); err != nil {
 		return Config{}, err
 	}
 
 	if config.HealthCheckTimeout < 15 {
-		// set a minimum of 15 seconds
 		config.HealthCheckTimeout = 15
 	}
 
@@ -224,55 +231,46 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 		}
 	}
 
-	/* check macro constraint rules:
-
-	- name must fit the regex ^[a-zA-Z0-9_-]+$
-	- names must be less than 64 characters (no reason, just cause)
-	- name can not be any reserved macros: PORT, MODEL_ID
-	- macro values must be less than 1024 characters
-	*/
+	// Validate global macros
 	for _, macro := range config.Macros {
 		if err = validateMacro(macro.Name, macro.Value); err != nil {
 			return Config{}, err
 		}
 	}
 
-	// Get and sort all model IDs first, makes testing more consistent
+	// Get and sort all model IDs for consistent port assignment
 	modelIds := make([]string, 0, len(config.Models))
 	for modelId := range config.Models {
 		modelIds = append(modelIds, modelId)
 	}
-	sort.Strings(modelIds) // This guarantees stable iteration order
+	sort.Strings(modelIds)
 
 	nextPort := config.StartPort
 	for _, modelId := range modelIds {
 		modelConfig := config.Models[modelId]
 
-		// Strip comments from command fields before macro expansion
+		// Strip comments from command fields
 		modelConfig.Cmd = StripComments(modelConfig.Cmd)
 		modelConfig.CmdStop = StripComments(modelConfig.CmdStop)
 
-		// validate model macros
+		// Validate model macros
 		for _, macro := range modelConfig.Macros {
 			if err = validateMacro(macro.Name, macro.Value); err != nil {
 				return Config{}, fmt.Errorf("model %s: %s", modelId, err.Error())
 			}
 		}
 
-		// Merge global config and model macros. Model macros take precedence
-		mergedMacros := make(MacroList, 0, len(config.Macros)+len(modelConfig.Macros))
+		// Build merged macro list: MODEL_ID + global macros + model macros (model overrides global)
+		mergedMacros := make(MacroList, 0, len(config.Macros)+len(modelConfig.Macros)+1)
 		mergedMacros = append(mergedMacros, MacroEntry{Name: "MODEL_ID", Value: modelId})
-
-		// Add global macros first
 		mergedMacros = append(mergedMacros, config.Macros...)
 
-		// Add model macros (can override global)
+		// Add model macros (override globals with same name)
 		for _, entry := range modelConfig.Macros {
-			// Remove any existing global macro with same name
 			found := false
 			for i, existing := range mergedMacros {
 				if existing.Name == entry.Name {
-					mergedMacros[i] = entry // Override
+					mergedMacros[i] = entry
 					found = true
 					break
 				}
@@ -282,23 +280,20 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 			}
 		}
 
-		// First pass: Substitute user-defined macros in reverse order (LIFO - last defined first)
-		// This allows later macros to reference earlier ones
+		// Substitute remaining macros in model fields (LIFO order)
 		for i := len(mergedMacros) - 1; i >= 0; i-- {
 			entry := mergedMacros[i]
 			macroSlug := fmt.Sprintf("${%s}", entry.Name)
 			macroStr := fmt.Sprintf("%v", entry.Value)
 
-			// Substitute in command fields
 			modelConfig.Cmd = strings.ReplaceAll(modelConfig.Cmd, macroSlug, macroStr)
 			modelConfig.CmdStop = strings.ReplaceAll(modelConfig.CmdStop, macroSlug, macroStr)
 			modelConfig.Proxy = strings.ReplaceAll(modelConfig.Proxy, macroSlug, macroStr)
 			modelConfig.CheckEndpoint = strings.ReplaceAll(modelConfig.CheckEndpoint, macroSlug, macroStr)
 			modelConfig.Filters.StripParams = strings.ReplaceAll(modelConfig.Filters.StripParams, macroSlug, macroStr)
 
-			// Substitute in metadata (recursive)
+			// Substitute in metadata (type-preserving)
 			if len(modelConfig.Metadata) > 0 {
-				var err error
 				result, err := substituteMacroInValue(modelConfig.Metadata, entry.Name, entry.Value)
 				if err != nil {
 					return Config{}, fmt.Errorf("model %s metadata: %s", modelId, err.Error())
@@ -307,18 +302,14 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 			}
 		}
 
-		// Final pass: check if PORT macro is needed after macro expansion
-		// ${PORT} is a resource on the local machine so a new port is only allocated
-		// if it is required in either cmd or proxy keys
+		// Handle PORT macro - only allocate if cmd uses it
 		cmdHasPort := strings.Contains(modelConfig.Cmd, "${PORT}")
 		proxyHasPort := strings.Contains(modelConfig.Proxy, "${PORT}")
-		if cmdHasPort || proxyHasPort { // either has it
-			if !cmdHasPort && proxyHasPort { // but both don't have it
+		if cmdHasPort || proxyHasPort {
+			if !cmdHasPort && proxyHasPort {
 				return Config{}, fmt.Errorf("model %s: proxy uses ${PORT} but cmd does not - ${PORT} is only available when used in cmd", modelId)
 			}
 
-			// Add PORT macro and substitute it
-			portEntry := MacroEntry{Name: "PORT", Value: nextPort}
 			macroSlug := "${PORT}"
 			macroStr := fmt.Sprintf("%v", nextPort)
 
@@ -326,10 +317,8 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 			modelConfig.CmdStop = strings.ReplaceAll(modelConfig.CmdStop, macroSlug, macroStr)
 			modelConfig.Proxy = strings.ReplaceAll(modelConfig.Proxy, macroSlug, macroStr)
 
-			// Substitute PORT in metadata
 			if len(modelConfig.Metadata) > 0 {
-				var err error
-				result, err := substituteMacroInValue(modelConfig.Metadata, portEntry.Name, portEntry.Value)
+				result, err := substituteMacroInValue(modelConfig.Metadata, "PORT", nextPort)
 				if err != nil {
 					return Config{}, fmt.Errorf("model %s metadata: %s", modelId, err.Error())
 				}
@@ -339,7 +328,7 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 			nextPort++
 		}
 
-		// make sure there are no unknown macros that have not been replaced
+		// Validate no unknown macros remain
 		fieldMap := map[string]string{
 			"cmd":                 modelConfig.Cmd,
 			"cmdStop":             modelConfig.CmdStop,
@@ -353,35 +342,27 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 			for _, match := range matches {
 				macroName := match[1]
 				if macroName == "PID" && fieldName == "cmdStop" {
-					continue // this is ok, has to be replaced by process later
+					continue // replaced at runtime
 				}
-				// Reserved macros are always valid (they should have been substituted already)
 				if macroName == "PORT" || macroName == "MODEL_ID" {
 					return Config{}, fmt.Errorf("macro '${%s}' should have been substituted in %s.%s", macroName, modelId, fieldName)
 				}
-				// Any other macro is unknown
 				return Config{}, fmt.Errorf("unknown macro '${%s}' found in %s.%s", macroName, modelId, fieldName)
 			}
 		}
 
-		// Check for unknown macros in metadata
 		if len(modelConfig.Metadata) > 0 {
-			if err := validateMetadataForUnknownMacros(modelConfig.Metadata, modelId); err != nil {
+			if err := validateNestedForUnknownMacros(modelConfig.Metadata, fmt.Sprintf("model %s metadata", modelId)); err != nil {
 				return Config{}, err
 			}
 		}
 
-		// Validate the proxy URL.
 		if _, err := url.Parse(modelConfig.Proxy); err != nil {
-			return Config{}, fmt.Errorf(
-				"model %s: invalid proxy URL: %w", modelId, err,
-			)
+			return Config{}, fmt.Errorf("model %s: invalid proxy URL: %w", modelId, err)
 		}
 
-		// if sendLoadingState is nil, set it to the global config value
-		// see #366
 		if modelConfig.SendLoadingState == nil {
-			v := config.SendLoadingState // copy it
+			v := config.SendLoadingState
 			modelConfig.SendLoadingState = &v
 		}
 
@@ -389,18 +370,17 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 	}
 
 	config = AddDefaultGroupToConfig(config)
-	// check that members are all unique in the groups
-	memberUsage := make(map[string]string) // maps member to group it appears in
+
+	// Validate group members
+	memberUsage := make(map[string]string)
 	for groupID, groupConfig := range config.Groups {
 		prevSet := make(map[string]bool)
 		for _, member := range groupConfig.Members {
-			// Check for duplicates within this group
 			if _, found := prevSet[member]; found {
 				return Config{}, fmt.Errorf("duplicate model member %s found in group: %s", member, groupID)
 			}
 			prevSet[member] = true
 
-			// Check if member is used in another group
 			if existingGroup, exists := memberUsage[member]; exists {
 				return Config{}, fmt.Errorf("model member %s is used in multiple groups: %s and %s", member, existingGroup, groupID)
 			}
@@ -408,7 +388,7 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 		}
 	}
 
-	// clean up hooks preload
+	// Clean up hooks preload
 	if len(config.Hooks.OnStartup.Preload) > 0 {
 		var toPreload []string
 		for _, modelID := range config.Hooks.OnStartup.Preload {
@@ -420,19 +400,54 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 				toPreload = append(toPreload, real)
 			}
 		}
-
 		config.Hooks.OnStartup.Preload = toPreload
 	}
 
-	// check api keys validatity
-	for _, apikey := range config.RequiredAPIKeys {
+	// Validate API keys (env macros already substituted at string level)
+	for i, apikey := range config.RequiredAPIKeys {
 		if apikey == "" {
 			return Config{}, fmt.Errorf("empty api key found in apiKeys")
 		}
-
 		if strings.Contains(apikey, " ") {
 			return Config{}, fmt.Errorf("api key cannot contain spaces: `%s`", apikey)
 		}
+		config.RequiredAPIKeys[i] = apikey
+	}
+
+	// Process peers with global macro substitution
+	for peerName, peerConfig := range config.Peers {
+		// Substitute global macros (LIFO order)
+		for i := len(config.Macros) - 1; i >= 0; i-- {
+			entry := config.Macros[i]
+			macroSlug := fmt.Sprintf("${%s}", entry.Name)
+			macroStr := fmt.Sprintf("%v", entry.Value)
+
+			peerConfig.ApiKey = strings.ReplaceAll(peerConfig.ApiKey, macroSlug, macroStr)
+			peerConfig.Filters.StripParams = strings.ReplaceAll(peerConfig.Filters.StripParams, macroSlug, macroStr)
+
+			// Substitute in setParams (type-preserving)
+			if len(peerConfig.Filters.SetParams) > 0 {
+				result, err := substituteMacroInValue(peerConfig.Filters.SetParams, entry.Name, entry.Value)
+				if err != nil {
+					return Config{}, fmt.Errorf("peers.%s.filters.setParams: %w", peerName, err)
+				}
+				peerConfig.Filters.SetParams = result.(map[string]any)
+			}
+		}
+
+		// Validate no unknown macros remain
+		if matches := macroPatternRegex.FindAllStringSubmatch(peerConfig.ApiKey, -1); len(matches) > 0 {
+			return Config{}, fmt.Errorf("peers.%s.apiKey: unknown macro '${%s}'", peerName, matches[0][1])
+		}
+		if matches := macroPatternRegex.FindAllStringSubmatch(peerConfig.Filters.StripParams, -1); len(matches) > 0 {
+			return Config{}, fmt.Errorf("peers.%s.filters.stripParams: unknown macro '${%s}'", peerName, matches[0][1])
+		}
+		if len(peerConfig.Filters.SetParams) > 0 {
+			if err := validateNestedForUnknownMacros(peerConfig.Filters.SetParams, fmt.Sprintf("peers.%s.filters.setParams", peerName)); err != nil {
+				return Config{}, err
+			}
+		}
+		config.Peers[peerName] = peerConfig
 	}
 
 	return config, nil
@@ -565,20 +580,26 @@ func validateMacro(name string, value any) error {
 	return nil
 }
 
-// validateMetadataForUnknownMacros recursively checks for any remaining macro references in metadata
-func validateMetadataForUnknownMacros(value any, modelId string) error {
+// validateNestedForUnknownMacros recursively checks for any remaining macro references in nested structures
+func validateNestedForUnknownMacros(value any, context string) error {
 	switch v := value.(type) {
 	case string:
 		matches := macroPatternRegex.FindAllStringSubmatch(v, -1)
 		for _, match := range matches {
 			macroName := match[1]
-			return fmt.Errorf("model %s metadata: unknown macro '${%s}'", modelId, macroName)
+			return fmt.Errorf("%s: unknown macro '${%s}'", context, macroName)
+		}
+		// Check for unsubstituted env macros
+		envMatches := envMacroRegex.FindAllStringSubmatch(v, -1)
+		for _, match := range envMatches {
+			varName := match[1]
+			return fmt.Errorf("%s: environment variable '%s' not set", context, varName)
 		}
 		return nil
 
 	case map[string]any:
 		for _, val := range v {
-			if err := validateMetadataForUnknownMacros(val, modelId); err != nil {
+			if err := validateNestedForUnknownMacros(val, context); err != nil {
 				return err
 			}
 		}
@@ -586,7 +607,7 @@ func validateMetadataForUnknownMacros(value any, modelId string) error {
 
 	case []any:
 		for _, val := range v {
-			if err := validateMetadataForUnknownMacros(val, modelId); err != nil {
+			if err := validateNestedForUnknownMacros(val, context); err != nil {
 				return err
 			}
 		}
@@ -644,4 +665,47 @@ func substituteMacroInValue(value any, macroName string, macroValue any) (any, e
 		// Return scalar types as-is
 		return value, nil
 	}
+}
+
+// substituteEnvMacros replaces ${env.VAR_NAME} with environment variable values
+// Returns error if any env var is not set or contains invalid characters
+func substituteEnvMacros(s string) (string, error) {
+	result := s
+	matches := envMacroRegex.FindAllStringSubmatch(s, -1)
+	for _, match := range matches {
+		fullMatch := match[0] // ${env.VAR_NAME}
+		varName := match[1]   // VAR_NAME
+
+		value, exists := os.LookupEnv(varName)
+		if !exists {
+			return "", fmt.Errorf("environment variable '%s' is not set", varName)
+		}
+
+		// Sanitize the value for safe YAML substitution
+		value, err := sanitizeEnvValueForYAML(value, varName)
+		if err != nil {
+			return "", err
+		}
+
+		result = strings.ReplaceAll(result, fullMatch, value)
+	}
+	return result, nil
+}
+
+// sanitizeEnvValueForYAML ensures an environment variable value is safe for YAML substitution.
+// It rejects values with characters that break YAML structure and escapes quotes/backslashes
+// for compatibility with double-quoted YAML strings.
+func sanitizeEnvValueForYAML(value, varName string) (string, error) {
+	// Reject values that would break YAML structure regardless of quoting context
+	if strings.ContainsAny(value, "\n\r\x00") {
+		return "", fmt.Errorf("environment variable '%s' contains newlines or null bytes which are not allowed in YAML substitution", varName)
+	}
+
+	// Escape backslashes and double quotes for safe use in double-quoted YAML strings.
+	// In unquoted contexts, these escapes appear literally (harmless for most use cases).
+	// In double-quoted contexts, they are interpreted correctly.
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `"`, `\"`)
+
+	return value, nil
 }

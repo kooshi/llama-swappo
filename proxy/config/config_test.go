@@ -811,3 +811,503 @@ func TestConfig_APIKeys_Invalid(t *testing.T) {
 		})
 	}
 }
+
+func TestConfig_APIKeys_EnvMacros(t *testing.T) {
+	t.Run("env substitution in apiKeys", func(t *testing.T) {
+		t.Setenv("TEST_API_KEY", "secret-key-123")
+
+		content := `apiKeys: ["${env.TEST_API_KEY}"]`
+		config, err := LoadConfigFromReader(strings.NewReader(content))
+		assert.NoError(t, err)
+		assert.Equal(t, []string{"secret-key-123"}, config.RequiredAPIKeys)
+	})
+
+	t.Run("multiple env substitutions in apiKeys", func(t *testing.T) {
+		t.Setenv("TEST_API_KEY_1", "key-one")
+		t.Setenv("TEST_API_KEY_2", "key-two")
+
+		content := `apiKeys: ["${env.TEST_API_KEY_1}", "${env.TEST_API_KEY_2}", "static-key"]`
+		config, err := LoadConfigFromReader(strings.NewReader(content))
+		assert.NoError(t, err)
+		assert.Equal(t, []string{"key-one", "key-two", "static-key"}, config.RequiredAPIKeys)
+	})
+
+	t.Run("missing env var in apiKeys", func(t *testing.T) {
+		content := `apiKeys: ["${env.NONEXISTENT_API_KEY}"]`
+		_, err := LoadConfigFromReader(strings.NewReader(content))
+		assert.Error(t, err)
+		// With string-level env substitution, error only includes var name
+		assert.Contains(t, err.Error(), "NONEXISTENT_API_KEY")
+	})
+
+	t.Run("env substitution results in empty key", func(t *testing.T) {
+		t.Setenv("TEST_EMPTY_KEY", "")
+
+		content := `apiKeys: ["${env.TEST_EMPTY_KEY}"]`
+		_, err := LoadConfigFromReader(strings.NewReader(content))
+		assert.Error(t, err)
+		assert.Equal(t, "empty api key found in apiKeys", err.Error())
+	})
+}
+
+func TestConfig_EnvMacros(t *testing.T) {
+	t.Run("basic env substitution in cmd", func(t *testing.T) {
+		t.Setenv("TEST_MODEL_PATH", "/opt/models")
+
+		content := `
+models:
+  test:
+    cmd: "${env.TEST_MODEL_PATH}/llama-server"
+    proxy: "http://localhost:8080"
+`
+		config, err := LoadConfigFromReader(strings.NewReader(content))
+		assert.NoError(t, err)
+		assert.Equal(t, "/opt/models/llama-server", config.Models["test"].Cmd)
+	})
+
+	t.Run("env substitution in multiple fields", func(t *testing.T) {
+		t.Setenv("TEST_HOST", "myserver")
+		t.Setenv("TEST_PORT", "9999")
+
+		content := `
+models:
+  test:
+    cmd: "server --host ${env.TEST_HOST}"
+    proxy: "http://${env.TEST_HOST}:${env.TEST_PORT}"
+    checkEndpoint: "http://${env.TEST_HOST}/health"
+`
+		config, err := LoadConfigFromReader(strings.NewReader(content))
+		assert.NoError(t, err)
+		assert.Equal(t, "server --host myserver", config.Models["test"].Cmd)
+		assert.Equal(t, "http://myserver:9999", config.Models["test"].Proxy)
+		assert.Equal(t, "http://myserver/health", config.Models["test"].CheckEndpoint)
+	})
+
+	t.Run("env in global macro value", func(t *testing.T) {
+		t.Setenv("TEST_BASE_PATH", "/usr/local")
+
+		content := `
+macros:
+  SERVER_PATH: "${env.TEST_BASE_PATH}/bin/server"
+models:
+  test:
+    cmd: "${SERVER_PATH} --port 8080"
+    proxy: "http://localhost:8080"
+`
+		config, err := LoadConfigFromReader(strings.NewReader(content))
+		assert.NoError(t, err)
+		assert.Equal(t, "/usr/local/bin/server --port 8080", config.Models["test"].Cmd)
+	})
+
+	t.Run("env in model-level macro value", func(t *testing.T) {
+		t.Setenv("TEST_MODEL_DIR", "/models/llama")
+
+		content := `
+models:
+  test:
+    macros:
+      MODEL_FILE: "${env.TEST_MODEL_DIR}/model.gguf"
+    cmd: "server --model ${MODEL_FILE}"
+    proxy: "http://localhost:8080"
+`
+		config, err := LoadConfigFromReader(strings.NewReader(content))
+		assert.NoError(t, err)
+		assert.Equal(t, "server --model /models/llama/model.gguf", config.Models["test"].Cmd)
+	})
+
+	t.Run("env in metadata", func(t *testing.T) {
+		t.Setenv("TEST_API_KEY", "secret123")
+
+		content := `
+models:
+  test:
+    cmd: "server"
+    proxy: "http://localhost:8080"
+    metadata:
+      api_key: "${env.TEST_API_KEY}"
+      nested:
+        key: "${env.TEST_API_KEY}"
+`
+		config, err := LoadConfigFromReader(strings.NewReader(content))
+		assert.NoError(t, err)
+		assert.Equal(t, "secret123", config.Models["test"].Metadata["api_key"])
+		nested := config.Models["test"].Metadata["nested"].(map[string]any)
+		assert.Equal(t, "secret123", nested["key"])
+	})
+
+	t.Run("env in filters.stripParams", func(t *testing.T) {
+		t.Setenv("TEST_STRIP_PARAMS", "temperature,top_p")
+
+		content := `
+models:
+  test:
+    cmd: "server"
+    proxy: "http://localhost:8080"
+    filters:
+      stripParams: "${env.TEST_STRIP_PARAMS}"
+`
+		config, err := LoadConfigFromReader(strings.NewReader(content))
+		assert.NoError(t, err)
+		assert.Equal(t, "temperature,top_p", config.Models["test"].Filters.StripParams)
+	})
+
+	t.Run("env in cmdStop", func(t *testing.T) {
+		t.Setenv("TEST_KILL_SIGNAL", "SIGTERM")
+
+		content := `
+models:
+  test:
+    cmd: "server --port ${PORT}"
+    cmdStop: "kill -${env.TEST_KILL_SIGNAL} ${PID}"
+    proxy: "http://localhost:${PORT}"
+`
+		config, err := LoadConfigFromReader(strings.NewReader(content))
+		assert.NoError(t, err)
+		assert.Contains(t, config.Models["test"].CmdStop, "-SIGTERM")
+	})
+
+	t.Run("missing env var returns error", func(t *testing.T) {
+		content := `
+models:
+  test:
+    cmd: "${env.UNDEFINED_VAR_12345}/server"
+    proxy: "http://localhost:8080"
+`
+		_, err := LoadConfigFromReader(strings.NewReader(content))
+		if assert.Error(t, err) {
+			assert.Contains(t, err.Error(), "UNDEFINED_VAR_12345")
+			assert.Contains(t, err.Error(), "not set")
+		}
+	})
+
+	t.Run("missing env var in global macro", func(t *testing.T) {
+		content := `
+macros:
+  PATH: "${env.UNDEFINED_GLOBAL_VAR}"
+models:
+  test:
+    cmd: "server"
+    proxy: "http://localhost:8080"
+`
+		_, err := LoadConfigFromReader(strings.NewReader(content))
+		if assert.Error(t, err) {
+			assert.Contains(t, err.Error(), "UNDEFINED_GLOBAL_VAR")
+			assert.Contains(t, err.Error(), "not set")
+		}
+	})
+
+	t.Run("missing env var in model macro", func(t *testing.T) {
+		content := `
+models:
+  test:
+    macros:
+      MY_PATH: "${env.UNDEFINED_MODEL_VAR}"
+    cmd: "server"
+    proxy: "http://localhost:8080"
+`
+		_, err := LoadConfigFromReader(strings.NewReader(content))
+		if assert.Error(t, err) {
+			assert.Contains(t, err.Error(), "UNDEFINED_MODEL_VAR")
+			assert.Contains(t, err.Error(), "not set")
+		}
+	})
+
+	t.Run("missing env var in metadata", func(t *testing.T) {
+		content := `
+models:
+  test:
+    cmd: "server"
+    proxy: "http://localhost:8080"
+    metadata:
+      key: "${env.UNDEFINED_META_VAR}"
+`
+		_, err := LoadConfigFromReader(strings.NewReader(content))
+		if assert.Error(t, err) {
+			assert.Contains(t, err.Error(), "UNDEFINED_META_VAR")
+			assert.Contains(t, err.Error(), "not set")
+		}
+	})
+
+	t.Run("env combined with regular macros", func(t *testing.T) {
+		t.Setenv("TEST_ROOT", "/data")
+
+		content := `
+macros:
+  MODEL_BASE: "${env.TEST_ROOT}/models"
+models:
+  test:
+    cmd: "server --model ${MODEL_BASE}/${MODEL_ID}.gguf"
+    proxy: "http://localhost:8080"
+`
+		config, err := LoadConfigFromReader(strings.NewReader(content))
+		assert.NoError(t, err)
+		assert.Equal(t, "server --model /data/models/test.gguf", config.Models["test"].Cmd)
+	})
+
+	t.Run("multiple env vars in same string", func(t *testing.T) {
+		t.Setenv("TEST_USER", "admin")
+		t.Setenv("TEST_PASS", "secret")
+
+		content := `
+models:
+  test:
+    cmd: "server --auth ${env.TEST_USER}:${env.TEST_PASS}"
+    proxy: "http://localhost:8080"
+`
+		config, err := LoadConfigFromReader(strings.NewReader(content))
+		assert.NoError(t, err)
+		assert.Equal(t, "server --auth admin:secret", config.Models["test"].Cmd)
+	})
+
+	t.Run("env value with newline is rejected", func(t *testing.T) {
+		t.Setenv("TEST_MULTILINE", "line1\nline2")
+
+		content := `
+models:
+  test:
+    cmd: "server --config ${env.TEST_MULTILINE}"
+    proxy: "http://localhost:8080"
+`
+		_, err := LoadConfigFromReader(strings.NewReader(content))
+		if assert.Error(t, err) {
+			assert.Contains(t, err.Error(), "TEST_MULTILINE")
+			assert.Contains(t, err.Error(), "newlines")
+		}
+	})
+
+	t.Run("env value with carriage return is rejected", func(t *testing.T) {
+		t.Setenv("TEST_CR", "line1\rline2")
+
+		content := `
+models:
+  test:
+    cmd: "server --config ${env.TEST_CR}"
+    proxy: "http://localhost:8080"
+`
+		_, err := LoadConfigFromReader(strings.NewReader(content))
+		if assert.Error(t, err) {
+			assert.Contains(t, err.Error(), "TEST_CR")
+			assert.Contains(t, err.Error(), "newlines")
+		}
+	})
+
+	t.Run("env value with quotes is escaped for YAML", func(t *testing.T) {
+		t.Setenv("TEST_QUOTED", `value with "quotes"`)
+
+		content := `
+models:
+  test:
+    cmd: "server --arg \"${env.TEST_QUOTED}\""
+    proxy: "http://localhost:8080"
+`
+		config, err := LoadConfigFromReader(strings.NewReader(content))
+		assert.NoError(t, err)
+		// Quotes are escaped before YAML parsing, then YAML unescapes them
+		// Final result preserves the original value with quotes
+		assert.Contains(t, config.Models["test"].Cmd, `"quotes"`)
+	})
+
+	t.Run("env value with backslash is escaped for YAML", func(t *testing.T) {
+		t.Setenv("TEST_BACKSLASH", `path\to\file`)
+
+		content := `
+models:
+  test:
+    cmd: "server --path \"${env.TEST_BACKSLASH}\""
+    proxy: "http://localhost:8080"
+`
+		config, err := LoadConfigFromReader(strings.NewReader(content))
+		assert.NoError(t, err)
+		// Backslashes are escaped before YAML parsing, then YAML unescapes them
+		// Final result preserves the original value with backslashes
+		assert.Contains(t, config.Models["test"].Cmd, `path\to\file`)
+	})
+}
+
+func TestConfig_PeerApiKey_EnvMacros(t *testing.T) {
+	t.Run("env substitution in peer apiKey", func(t *testing.T) {
+		t.Setenv("TEST_PEER_API_KEY", "sk-peer-secret-123")
+
+		content := `
+peers:
+  openrouter:
+    proxy: https://openrouter.ai/api
+    apiKey: "${env.TEST_PEER_API_KEY}"
+    models:
+      - llama-3.1-8b
+`
+		config, err := LoadConfigFromReader(strings.NewReader(content))
+		assert.NoError(t, err)
+		assert.Equal(t, "sk-peer-secret-123", config.Peers["openrouter"].ApiKey)
+	})
+
+	t.Run("missing env var in peer apiKey", func(t *testing.T) {
+		content := `
+peers:
+  openrouter:
+    proxy: https://openrouter.ai/api
+    apiKey: "${env.NONEXISTENT_PEER_KEY}"
+    models:
+      - llama-3.1-8b
+`
+		_, err := LoadConfigFromReader(strings.NewReader(content))
+		assert.Error(t, err)
+		// With string-level env substitution, error only includes var name
+		assert.Contains(t, err.Error(), "NONEXISTENT_PEER_KEY")
+	})
+
+	t.Run("static apiKey unchanged", func(t *testing.T) {
+		content := `
+peers:
+  openrouter:
+    proxy: https://openrouter.ai/api
+    apiKey: sk-static-key
+    models:
+      - llama-3.1-8b
+`
+		config, err := LoadConfigFromReader(strings.NewReader(content))
+		assert.NoError(t, err)
+		assert.Equal(t, "sk-static-key", config.Peers["openrouter"].ApiKey)
+	})
+
+	t.Run("multiple peers with env apiKeys", func(t *testing.T) {
+		t.Setenv("TEST_PEER_KEY_1", "key-one")
+		t.Setenv("TEST_PEER_KEY_2", "key-two")
+
+		content := `
+peers:
+  peer1:
+    proxy: https://peer1.example.com
+    apiKey: "${env.TEST_PEER_KEY_1}"
+    models:
+      - model-a
+  peer2:
+    proxy: https://peer2.example.com
+    apiKey: "${env.TEST_PEER_KEY_2}"
+    models:
+      - model-b
+`
+		config, err := LoadConfigFromReader(strings.NewReader(content))
+		assert.NoError(t, err)
+		assert.Equal(t, "key-one", config.Peers["peer1"].ApiKey)
+		assert.Equal(t, "key-two", config.Peers["peer2"].ApiKey)
+	})
+
+	t.Run("global macro substitution in peer apiKey", func(t *testing.T) {
+		content := `
+macros:
+  API_KEY: sk-from-global-macro
+peers:
+  openrouter:
+    proxy: https://openrouter.ai/api
+    apiKey: "${API_KEY}"
+    models:
+      - llama-3.1-8b
+`
+		config, err := LoadConfigFromReader(strings.NewReader(content))
+		assert.NoError(t, err)
+		assert.Equal(t, "sk-from-global-macro", config.Peers["openrouter"].ApiKey)
+	})
+
+	t.Run("global macro in peer filters.stripParams", func(t *testing.T) {
+		content := `
+macros:
+  STRIP_LIST: "temperature, top_p"
+peers:
+  openrouter:
+    proxy: https://openrouter.ai/api
+    models:
+      - llama-3.1-8b
+    filters:
+      stripParams: "${STRIP_LIST}"
+`
+		config, err := LoadConfigFromReader(strings.NewReader(content))
+		assert.NoError(t, err)
+		assert.Equal(t, "temperature, top_p", config.Peers["openrouter"].Filters.StripParams)
+	})
+
+	t.Run("global macro in peer filters.setParams", func(t *testing.T) {
+		content := `
+macros:
+  MAX_TOKENS: 4096
+peers:
+  openrouter:
+    proxy: https://openrouter.ai/api
+    models:
+      - llama-3.1-8b
+    filters:
+      setParams:
+        max_tokens: "${MAX_TOKENS}"
+`
+		config, err := LoadConfigFromReader(strings.NewReader(content))
+		assert.NoError(t, err)
+		assert.Equal(t, 4096, config.Peers["openrouter"].Filters.SetParams["max_tokens"])
+	})
+
+	t.Run("env macro in peer filters.setParams", func(t *testing.T) {
+		t.Setenv("TEST_RETENTION_POLICY", "deny")
+
+		content := `
+peers:
+  openrouter:
+    proxy: https://openrouter.ai/api
+    models:
+      - llama-3.1-8b
+    filters:
+      setParams:
+        data_collection: "${env.TEST_RETENTION_POLICY}"
+`
+		config, err := LoadConfigFromReader(strings.NewReader(content))
+		assert.NoError(t, err)
+		assert.Equal(t, "deny", config.Peers["openrouter"].Filters.SetParams["data_collection"])
+	})
+
+	t.Run("env macro in peer filters.stripParams", func(t *testing.T) {
+		t.Setenv("TEST_STRIP_PARAMS", "frequency_penalty, presence_penalty")
+
+		content := `
+peers:
+  openrouter:
+    proxy: https://openrouter.ai/api
+    models:
+      - llama-3.1-8b
+    filters:
+      stripParams: "${env.TEST_STRIP_PARAMS}"
+`
+		config, err := LoadConfigFromReader(strings.NewReader(content))
+		assert.NoError(t, err)
+		assert.Equal(t, "frequency_penalty, presence_penalty", config.Peers["openrouter"].Filters.StripParams)
+	})
+
+	t.Run("unknown macro in peer apiKey fails", func(t *testing.T) {
+		content := `
+peers:
+  openrouter:
+    proxy: https://openrouter.ai/api
+    apiKey: "${UNDEFINED_MACRO}"
+    models:
+      - llama-3.1-8b
+`
+		_, err := LoadConfigFromReader(strings.NewReader(content))
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "peers.openrouter.apiKey")
+		assert.Contains(t, err.Error(), "unknown macro")
+	})
+
+	t.Run("unknown macro in peer filters.setParams fails", func(t *testing.T) {
+		content := `
+peers:
+  openrouter:
+    proxy: https://openrouter.ai/api
+    models:
+      - llama-3.1-8b
+    filters:
+      setParams:
+        value: "${UNDEFINED_MACRO}"
+`
+		_, err := LoadConfigFromReader(strings.NewReader(content))
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "peers.openrouter.filters.setParams")
+		assert.Contains(t, err.Error(), "unknown macro")
+	})
+}
