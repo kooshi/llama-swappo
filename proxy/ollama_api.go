@@ -207,9 +207,9 @@ func (pm *ProxyManager) ollamaShowHandler() gin.HandlerFunc {
 			"general.architecture": arch,
 		}
 		if ctxLength > 0 {
-			modelInfo["llama.context_length"] = ctxLength
+			modelInfo[fmt.Sprintf("%s.context_length", arch)] = ctxLength
 		} else {
-			modelInfo["llama.context_length"] = 2048
+			modelInfo[fmt.Sprintf("%s.context_length", arch)] = 2048
 		}
 
 		resp := OllamaShowResponse{
