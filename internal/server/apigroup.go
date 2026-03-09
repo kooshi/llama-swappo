@@ -350,12 +350,17 @@ func (s *Server) handleAPIPerformance(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAPIVersion serves the build metadata.
+//
+// llama-swappo: Ollama clients discover this endpoint and gate features on the
+// version they read, so "version" reports an Ollama version. The real build is
+// still available as "llama_swap_version".
 func (s *Server) handleAPIVersion(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
-		"version":    s.build.Version,
-		"commit":     s.build.Commit,
-		"build_date": s.build.Date,
+		"version":            ollamaSpoofedVersion,
+		"llama_swap_version": s.build.Version,
+		"commit":             s.build.Commit,
+		"build_date":         s.build.Date,
 	})
 }
 
