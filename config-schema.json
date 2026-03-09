@@ -530,6 +530,12 @@
                         "default": {},
                         "description": "Dictionary of arbitrary values included in /v1/models. Can contain complex types. Only passed through in /v1/models responses."
                     },
+                    "chatTemplateKwargs": {
+                        "type": "object",
+                        "additionalProperties": true,
+                        "default": {},
+                        "description": "Default chat_template_kwargs merged into every request for this model. Request-level values take precedence. Useful for model-specific defaults like enable_thinking."
+                    },
                     "concurrencyLimit": {
                         "type": "integer",
                         "minimum": 0,
