@@ -54,6 +54,11 @@ type ModelConfig struct {
 
 	// Timeout settings for proxy connections
 	Timeouts TimeoutsConfig `yaml:"timeouts"`
+
+	// ChatTemplateKwargs: default chat_template_kwargs to apply to all requests
+	// These are merged with request-level values, with request values taking precedence
+	// Useful for setting model-specific defaults like enable_thinking for Qwen3
+	ChatTemplateKwargs map[string]any `yaml:"chatTemplateKwargs"`
 }
 
 func (m *ModelConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {

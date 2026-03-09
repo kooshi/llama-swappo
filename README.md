@@ -1,3 +1,70 @@
+# llama-swappo
+
+A fork of llama-swap with a minimally implemented ollama compatible api grafted onto it, so you can use it with clients that only support ollama.
+
+This makes llama-swappo a drop in replacement for ollama, for enthusiests that want more control, with more compatability.
+
+These commits automatically rebase onto the latest llama-swap nightly.
+
+## Features
+
+- ✅ Ollama API supported endpoints:
+  - `HEAD /` - for health check
+  - `api/tags` - to list models
+  - `api/show` - for model details
+  - `api/ps` - to show what's running
+  - `api/generate` (untested, clients I've used so far seem to use the OpenAI compatible endpoints for actual generation and chat)
+  - `api/chat` (untested)
+  - `api/embed`
+  - `api/embeddings`
+- ✅ Enhanced Ollama API translation:
+  - Tool calling support (translates Ollama tool calls to/from OpenAI format)
+  - `think` parameter for extended thinking models (maps to OpenAI `reasoning_effort`)
+  - Structured outputs via `format` parameter (JSON schema support)
+  - Reasoning content mapping (OpenAI `reasoning_content` ↔ Ollama `thinking` field)
+
+## How to install
+Use the original [Building from source](#building-from-source) instructions, and overwrite your installed llama-swap executable with the newly built one.
+
+## How to update
+The easiest way to update is to `git fetch && git reset --hard origin/master`.
+Because the changes in this repo are always rebased on top of llama-swap, `git pull` won't work.
+
+## Configuration
+
+If you're using llama-server, it will try to parse your arguments for the additional metadata it needs like context length.
+Alternatively, you can define the values in your config, which will override the inferred values.
+
+```yaml
+model1:
+  cmd: path/to/cmd --arg1 one
+  proxy: "http://localhost:8080"
+
+  # these
+  metadata:
+    architecture: qwen3
+    contextLength: 131072
+    capabilities:
+    - completion # for chat models
+    - tools # for tool use (requires --jinja in llama-server, and you must compile with this PR included https://github.com/ggml-org/llama.cpp/pull/12379)
+    - insert # for FITM coding, untested
+    - vision # untested
+    - embedding #untested
+    family: qwen # probably not needed
+    parameterSize: 32B # probably not needed
+    quantizationLevel: 4Q_K_M # probably not needed
+```
+
+## Support
+
+This was a personal tweak so I could play with local models in Github Copilot without having to deal with ollama.
+I offered to merge this into the upstream repo, but the maintainer decided, and I agree, that this change overcomplicates the elegance of llama-swap, and would be too much of a burden to maintain forever.
+My interests have already swung back to some other projects, so I don't intend to support this seriously.
+I won't be providing docker images or anything else.
+I'll accept pull requests if you fix something though.
+
+# Original README follows
+---
 ![llama-swap header image](docs/assets/hero3.webp)
 ![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/mostlygeek/llama-swap/total)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/mostlygeek/llama-swap/go-ci.yml)
