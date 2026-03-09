@@ -21,6 +21,7 @@ import (
 //   - StripParams removal (issue #174)
 //   - SetParams injection (issue #453)
 //   - SetParamsByID per-alias overrides
+//   - llama-swappo's Ollama compatibility fixups (see applyOllamaCompat)
 //
 // Non-JSON requests (GET, multipart forms) pass through untouched. The buffered
 // body is re-attached with Content-Length / Transfer-Encoding cleanup so the
@@ -52,6 +53,12 @@ func CreateFilterMiddleware(cfg config.Config) chain.Middleware {
 			}
 
 			body, err = applyFilters(body, data.Model, useModelName, filters)
+			if err != nil {
+				swaputil.SendResponse(w, r, http.StatusInternalServerError, err.Error())
+				return
+			}
+
+			body, err = applyOllamaCompat(body, cfg.Models[data.ModelID])
 			if err != nil {
 				swaputil.SendResponse(w, r, http.StatusInternalServerError, err.Error())
 				return
