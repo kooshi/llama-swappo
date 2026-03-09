@@ -417,6 +417,9 @@ func (s *Server) routes() {
 	// 405 with Allow, rather than the mux's bare 404.
 	mux.Handle("/api/mcp", apiChain.ThenFunc(s.handleAPIMCP))
 
+	// Ollama-compatible API (llama-swappo).
+	s.registerOllamaRoutes(mux, apiChain)
+
 	s.mux = mux
 	s.handler = chain.New(CreateRequestLogMiddleware(s.logs.HttpLogs), CreateCORSMiddleware(s.cfg)).Then(mux)
 }

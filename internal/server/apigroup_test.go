@@ -311,7 +311,10 @@ func TestServer_APIVersion(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got["version"] != "1.2.3" || got["commit"] != "deadbeef" || got["build_date"] != "2026-05-19" {
+	// llama-swappo reports an Ollama version here and moves the build version
+	// to llama_swap_version; see handleAPIVersion.
+	if got["version"] != ollamaSpoofedVersion || got["llama_swap_version"] != "1.2.3" ||
+		got["commit"] != "deadbeef" || got["build_date"] != "2026-05-19" {
 		t.Errorf("body = %v", got)
 	}
 }
