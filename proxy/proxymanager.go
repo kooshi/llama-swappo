@@ -63,7 +63,7 @@ func (ic *InflightCounter) Decrement() int {
 }
 
 type ProxyManager struct {
-	sync.Mutex
+	sync.RWMutex
 
 	config    config.Config
 	ginEngine *gin.Engine
@@ -210,6 +210,7 @@ func New(proxyConfig config.Config) *ProxyManager {
 	}
 
 	pm.setupGinEngine()
+	pm.RegisterOllamaRoutes()
 
 	// run any startup hooks
 	if len(proxyConfig.Hooks.OnStartup.Preload) > 0 {
@@ -433,6 +434,39 @@ func (pm *ProxyManager) trackInflight() gin.HandlerFunc {
 		defer event.Emit(InFlightRequestsEvent{Total: pm.inFlightCounter.Decrement()})
 		c.Next()
 	}
+}
+
+// RegisterOllamaRoutes sets up the Ollama-compatible API endpoints.
+func (pm *ProxyManager) RegisterOllamaRoutes() {
+	// General Ollama API
+	pm.ginEngine.HEAD("/", pm.ollamaHeartbeatHandler) //HEAD '/' does not conflict with llama-swap's GET '/'
+
+	// Ollama version endpoint conflicted with llama-swap's
+	//pm.ginEngine.GET("/api/version", pm.ollamaVersionHandler())
+	pm.ginEngine.HEAD("/api/version", pm.ollamaVersionHandler())
+
+	// Model management
+	pm.ginEngine.GET("/api/tags", pm.ollamaListTagsHandler())
+	pm.ginEngine.POST("/api/show", pm.ollamaShowHandler())
+	pm.ginEngine.GET("/api/ps", pm.ollamaPSHandler())
+
+	// Inference
+	pm.ginEngine.POST("/api/generate", pm.ollamaGenerateHandler())
+	pm.ginEngine.POST("/api/chat", pm.ollamaChatHandler())
+
+	// Embeddings
+	pm.ginEngine.POST("/api/embed", pm.ollamaEmbedHandler())
+	pm.ginEngine.POST("/api/embeddings", pm.ollamaLegacyEmbeddingsHandler()) // legacy endpoint
+
+	// Stubbed endpoints
+	stubbedPostRoutes := []string{
+		"/api/pull", "/api/push", "/api/copy",
+		"/api/create", "/api/delete",
+	}
+	for _, route := range stubbedPostRoutes {
+		pm.ginEngine.POST(route, pm.ollamaNotImplementedHandler)
+	}
+	pm.ginEngine.POST("/api/blobs/:digest", pm.ollamaNotImplementedHandler)
 }
 
 // ServeHTTP implements http.Handler interface
@@ -663,7 +697,15 @@ func (pm *ProxyManager) proxyToUpstream(c *gin.Context) {
 func (pm *ProxyManager) proxyInferenceHandler(c *gin.Context) {
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		pm.sendErrorResponse(c, http.StatusBadRequest, "could not ready request body")
+		pm.sendErrorResponse(c, http.StatusBadRequest, "could not read request body")
+		return
+	}
+
+	// Some clients (Copilot) omit parameters in function definitions instead of sending empty ones
+	// llama-server is strict about the schema. This ensures compliance.
+	bodyBytes, err = ensureOpenAIToolParameters(bodyBytes, pm.proxyLogger)
+	if err != nil {
+		pm.sendErrorResponse(c, http.StatusInternalServerError, fmt.Sprintf("error processing tools in request: %s", err.Error()))
 		return
 	}
 
@@ -770,6 +812,62 @@ func (pm *ProxyManager) proxyInferenceHandler(c *gin.Context) {
 		return
 	}
 
+	// Apply config-level chatTemplateKwargs as defaults
+	// Request-level values take precedence over config defaults
+	modelConfig := pm.config.Models[modelID]
+	if len(modelConfig.ChatTemplateKwargs) > 0 {
+		existingKwargs := gjson.GetBytes(bodyBytes, "chat_template_kwargs")
+		if !existingKwargs.Exists() {
+			// No request-level kwargs, use config defaults directly
+			bodyBytes, err = sjson.SetBytes(bodyBytes, "chat_template_kwargs", modelConfig.ChatTemplateKwargs)
+			if err != nil {
+				pm.sendErrorResponse(c, http.StatusInternalServerError, fmt.Sprintf("error setting chat_template_kwargs from config: %s", err.Error()))
+				return
+			}
+			pm.proxyLogger.Debugf("<%s> applied config-level chatTemplateKwargs: %v", modelID, modelConfig.ChatTemplateKwargs)
+		} else {
+			// Merge: config defaults first, then request values override
+			for key, value := range modelConfig.ChatTemplateKwargs {
+				path := "chat_template_kwargs." + key
+				// Only set if not already present in request
+				if !gjson.GetBytes(bodyBytes, path).Exists() {
+					bodyBytes, err = sjson.SetBytes(bodyBytes, path, value)
+					if err != nil {
+						pm.sendErrorResponse(c, http.StatusInternalServerError, fmt.Sprintf("error merging chat_template_kwargs.%s: %s", key, err.Error()))
+						return
+					}
+					pm.proxyLogger.Debugf("<%s> applied config default chatTemplateKwargs.%s=%v", modelID, key, value)
+				}
+			}
+		}
+	}
+
+	// Translate Ollama's "think" parameter to llama-server's "chat_template_kwargs"
+	// This allows OpenAI API clients to control thinking mode using the Ollama convention
+	if thinkResult := gjson.GetBytes(bodyBytes, "think"); thinkResult.Exists() {
+		thinkValue := thinkResult.Bool()
+		// Check if chat_template_kwargs already exists
+		if !gjson.GetBytes(bodyBytes, "chat_template_kwargs").Exists() {
+			bodyBytes, err = sjson.SetBytes(bodyBytes, "chat_template_kwargs", map[string]interface{}{
+				"enable_thinking": thinkValue,
+			})
+			if err != nil {
+				pm.sendErrorResponse(c, http.StatusInternalServerError, fmt.Sprintf("error setting chat_template_kwargs: %s", err.Error()))
+				return
+			}
+		} else {
+			// Merge with existing chat_template_kwargs
+			bodyBytes, err = sjson.SetBytes(bodyBytes, "chat_template_kwargs.enable_thinking", thinkValue)
+			if err != nil {
+				pm.sendErrorResponse(c, http.StatusInternalServerError, fmt.Sprintf("error setting enable_thinking: %s", err.Error()))
+				return
+			}
+		}
+		// Remove the original "think" parameter as llama-server doesn't understand it
+		bodyBytes, _ = sjson.DeleteBytes(bodyBytes, "think")
+		pm.proxyLogger.Debugf("<%s> translated think=%v to chat_template_kwargs.enable_thinking", modelID, thinkValue)
+	}
+
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
 	// dechunk it as we already have all the body bytes see issue #11
@@ -796,6 +894,57 @@ func (pm *ProxyManager) proxyInferenceHandler(c *gin.Context) {
 			return
 		}
 	}
+}
+
+// ensureOpenAIToolParameters checks the request body for OpenAI tools
+// and adds a default empty parameters object if a function tool is missing it.
+func ensureOpenAIToolParameters(bodyBytes []byte, proxyLogger *LogMonitor) ([]byte, error) {
+	toolsResult := gjson.GetBytes(bodyBytes, "tools")
+
+	if !toolsResult.Exists() || !toolsResult.IsArray() {
+		return bodyBytes, nil
+	}
+
+	currentBodyBytes := bodyBytes
+	madeChanges := false
+
+	for i, tool := range toolsResult.Array() {
+		if tool.Get("type").String() == "function" {
+			// Check if 'function' object exists and 'parameters' is missing within it
+			functionPath := fmt.Sprintf("tools.%d.function", i)
+			functionResult := gjson.GetBytes(currentBodyBytes, functionPath)
+
+			if functionResult.Exists() && functionResult.IsObject() {
+				parametersPath := functionPath + ".parameters"
+				if !gjson.GetBytes(currentBodyBytes, parametersPath).Exists() {
+					defaultParameters := map[string]interface{}{
+						"type":       "object",
+						"properties": map[string]interface{}{},
+					}
+
+					newBodyBytes, err := sjson.SetBytes(currentBodyBytes, parametersPath, defaultParameters)
+					if err != nil {
+						return nil, fmt.Errorf("failed to set default parameters for tool %d using sjson: %w", i, err)
+					}
+					currentBodyBytes = newBodyBytes
+					madeChanges = true
+
+					if proxyLogger != nil {
+						funcName := functionResult.Get("name").String()
+						if funcName == "" {
+							funcName = fmt.Sprintf("tool at index %d", i)
+						}
+						proxyLogger.Debugf("OpenAI Proxy: Added default parameters to tool function '%s' in request body using sjson", funcName)
+					}
+				}
+			}
+		}
+	}
+
+	if madeChanges {
+		return currentBodyBytes, nil
+	}
+	return bodyBytes, nil // Return original if no changes
 }
 
 func (pm *ProxyManager) proxyOAIPostFormHandler(c *gin.Context) {
@@ -966,7 +1115,7 @@ func (pm *ProxyManager) proxyGETModelHandler(c *gin.Context) {
 func (pm *ProxyManager) sendErrorResponse(c *gin.Context, statusCode int, message string) {
 	acceptHeader := c.GetHeader("Accept")
 
-	if strings.Contains(acceptHeader, "application/json") {
+	if strings.Contains(acceptHeader, "application/json") || strings.Contains(acceptHeader, "application/x-ndjson") {
 		c.JSON(statusCode, gin.H{"error": message})
 	} else {
 		c.String(statusCode, message)
@@ -1081,5 +1230,5 @@ func (pm *ProxyManager) SetVersion(buildDate string, commit string, version stri
 	defer pm.Unlock()
 	pm.buildDate = buildDate
 	pm.commit = commit
-	pm.version = version
+	pm.version = "0.13.5" //HACK to mimic ollama's API, since upstream API conflicts
 }
