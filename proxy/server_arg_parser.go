@@ -13,6 +13,7 @@ import (
 type ServerArgs struct {
 	Architecture      string
 	ContextLength     int
+	PredictLength     int // max output tokens (-n/--predict)
 	Capabilities      []string
 	Family            string
 	ParameterSize     string
@@ -127,6 +128,40 @@ func inferFamilyFromName(nameForInference string, currentArch string) string {
 	return inferPattern(nameForInference, familyPatterns, orderedFamilyCheckKeys)
 }
 
+// archChatTemplates maps architecture names to their standard Ollama-format chat templates.
+// These correspond to the templates used by the official Ollama project.
+var archChatTemplates = map[string]string{
+	// Llama3/4: uses special header/eot tokens
+	"llama3": "{{- range .Messages }}<|start_header_id|>{{ .Role }}<|end_header_id|>\n\n{{ .Content }}<|eot_id|>\n{{- end }}<|start_header_id|>assistant<|end_header_id|>\n\n",
+	"llama4": "{{- range .Messages }}<|start_header_id|>{{ .Role }}<|end_header_id|>\n\n{{ .Content }}<|eot_id|>\n{{- end }}<|start_header_id|>assistant<|end_header_id|>\n\n",
+	// Llama2: legacy chat format
+	"llama": "[INST] {{ if .System }}{{ .System }}\n{{ end }}{{ range .Messages }}{{ if eq .Role \"user\" }}{{ .Content }}[/INST]\n{{ else if eq .Role \"assistant\" }}{{ .Content }}</s>[INST] {{ end }}{{ end }}",
+	// Gemma3: newer turn format with system support
+	"gemma3": "{{- range $i, $_ := .Messages }}\n{{- $last := eq (len (slice $.Messages $i)) 1 }}\n{{- if eq .Role \"user\" }}<start_of_turn>user\n{{- if and (eq $i 1) $.System }}\n{{ $.System }}\n{{ end }}\n{{ .Content }}<end_of_turn>\n{{ else if eq .Role \"assistant\" }}<start_of_turn>model\n{{ .Content }}<end_of_turn>\n{{ end }}\n{{- if $last }}<start_of_turn>model\n{{ end }}\n{{- end }}",
+	// Gemma2/Gemma: older turn format
+	"gemma2": "{{- $system := \"\" }}\n{{- range .Messages }}\n{{- if eq .Role \"system\" }}{{- if not $system }}{{ $system = .Content }}{{- else }}{{ $system = printf \"%s\\n\\n%s\" $system .Content }}{{- end }}{{- continue }}{{- else if eq .Role \"user\" }}<start_of_turn>user\n{{- if $system }}\n{{ $system }}\n{{- $system = \"\" }}{{- end }}\n{{- else if eq .Role \"assistant\" }}<start_of_turn>model\n{{- end }}\n{{ .Content }}<end_of_turn>\n{{ end }}<start_of_turn>model\n",
+	"gemma":  "{{- $system := \"\" }}\n{{- range .Messages }}\n{{- if eq .Role \"system\" }}{{- if not $system }}{{ $system = .Content }}{{- else }}{{ $system = printf \"%s\\n\\n%s\" $system .Content }}{{- end }}{{- continue }}{{- else if eq .Role \"user\" }}<start_of_turn>user\n{{- if $system }}\n{{ $system }}\n{{- $system = \"\" }}{{- end }}\n{{- else if eq .Role \"assistant\" }}<start_of_turn>model\n{{- end }}\n{{ .Content }}<end_of_turn>\n{{ end }}<start_of_turn>model\n",
+	// Mistral: uses [INST] tags
+	"mistral3": "[INST] {{ range $index, $_ := .Messages }}\n{{- if eq .Role \"system\" }}{{ .Content }}\n\n{{ else if eq .Role \"user\" }}{{ .Content }}[/INST]\n{{- else if eq .Role \"assistant\" }} {{ .Content }}</s>[INST] {{ end }}\n{{- end }}",
+	"mistral":  "[INST] {{ range $index, $_ := .Messages }}\n{{- if eq .Role \"system\" }}{{ .Content }}\n\n{{ else if eq .Role \"user\" }}{{ .Content }}[/INST]\n{{- else if eq .Role \"assistant\" }} {{ .Content }}</s>[INST] {{ end }}\n{{- end }}",
+	// Phi3/Phi: uses role tokens with <|end|>
+	"phi3": "{{- range .Messages }}<|{{ .Role }}|>\n{{ .Content }}<|end|>\n{{ end }}<|assistant|>\n",
+	"phi":  "{{- range .Messages }}<|{{ .Role }}|>\n{{ .Content }}<|end|>\n{{ end }}<|assistant|>\n",
+	// Command-R: Cohere format
+	"command-r": "{{- if or .Tools .System }}<|START_OF_TURN_TOKEN|><|SYSTEM_TOKEN|>{{- if .System }}{{ .System }}{{- end }}<|END_OF_TURN_TOKEN|>{{- end }}\n{{- range .Messages }}\n{{- if eq .Role \"system\" }}{{- continue }}{{- end }}<|START_OF_TURN_TOKEN|>\n{{- if eq .Role \"user\" }}<|USER_TOKEN|>{{ .Content }}\n{{- else if eq .Role \"assistant\" }}<|CHATBOT_TOKEN|>\n{{- if .Content }}{{ .Content }}{{- end }}\n{{- end }}<|END_OF_TURN_TOKEN|>\n{{- end }}<|END_OF_TURN_TOKEN|><|START_OF_TURN_TOKEN|><|CHATBOT_TOKEN|>",
+	// Qwen2/Qwen3/QwenVL: ChatML format
+	"qwen2.5vl": "{{- range .Messages }}<|im_start|>{{ .Role }}\n{{ .Content }}<|im_end|>\n{{ end }}<|im_start|>assistant\n",
+	"qwen3":     "{{- range .Messages }}<|im_start|>{{ .Role }}\n{{ .Content }}<|im_end|>\n{{ end }}<|im_start|>assistant\n",
+	"qwen2":     "{{- range .Messages }}<|im_start|>{{ .Role }}\n{{ .Content }}<|im_end|>\n{{ end }}<|im_start|>assistant\n",
+	"qwen":      "{{- range .Messages }}<|im_start|>{{ .Role }}\n{{ .Content }}<|im_end|>\n{{ end }}<|im_start|>assistant\n",
+}
+
+// GetArchitectureTemplate returns the Ollama-format chat template for the given architecture.
+// Returns an empty string if no template is known for the architecture.
+func GetArchitectureTemplate(arch string) string {
+	return archChatTemplates[arch]
+}
+
 // NewLlamaServerParser creates a new parser for llama-server arguments.
 func NewLlamaServerParser() *LlamaServerParser {
 	return &LlamaServerParser{}
@@ -155,6 +190,13 @@ func (p *LlamaServerParser) Parse(cmdStr string, modelID string) ServerArgs {
 			if i+1 < len(args) {
 				if valInt, err := strconv.Atoi(args[i+1]); err == nil {
 					parsed.ContextLength = valInt
+				}
+				i++
+			}
+		case "-n", "--predict":
+			if i+1 < len(args) {
+				if valInt, err := strconv.Atoi(args[i+1]); err == nil && valInt > 0 {
+					parsed.PredictLength = valInt
 				}
 				i++
 			}
