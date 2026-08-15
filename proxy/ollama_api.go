@@ -1390,12 +1390,32 @@ func openAIRoleToOllama(role string) string {
 	}
 }
 
+// pendingToolCall tracks a tool call from the most recent assistant message so
+// tool responses that arrive without a usable tool_call_id can be bound to it.
+type pendingToolCall struct {
+	id       string
+	name     string
+	consumed bool
+}
+
 func ollamaMessagesToOpenAI(ollamaMsgs []OllamaMessage) []map[string]interface{} {
-	openAIMsgs := make([]map[string]interface{}, len(ollamaMsgs))
+	openAIMsgs := make([]map[string]interface{}, 0, len(ollamaMsgs))
+
+	// Tool calls from the most recent assistant message. Tool responses without
+	// an explicit tool_call_id are bound to these by function name, then by
+	// position. Some clients (e.g. Zed) send neither tool_call_id nor tool_name.
+	var pendingToolCalls []pendingToolCall
+
 	for i, msg := range ollamaMsgs {
 		openAIMsg := map[string]interface{}{
 			"role":    msg.Role,
 			"content": msg.Content,
+		}
+
+		// Any assistant message starts a new round; tool calls from earlier
+		// rounds must not capture later tool responses.
+		if msg.Role == "assistant" {
+			pendingToolCalls = nil
 		}
 
 		// Handle tool calls from assistant
@@ -1417,6 +1437,8 @@ func ollamaMessagesToOpenAI(ollamaMsgs []OllamaMessage) []map[string]interface{}
 				if toolID == "" {
 					toolID = fmt.Sprintf("call_%d_%d", i, validIndex)
 				}
+
+				pendingToolCalls = append(pendingToolCalls, pendingToolCall{id: toolID, name: tc.Function.Name})
 
 				// Default type to "function" if not provided
 				toolType := tc.Type
@@ -1442,19 +1464,55 @@ func ollamaMessagesToOpenAI(ollamaMsgs []OllamaMessage) []map[string]interface{}
 		// Handle tool role messages
 		// Support both OpenAI style (tool_call_id) and Ollama native style (tool_name)
 		if msg.Role == "tool" {
-			if msg.ToolCallID != "" {
-				openAIMsg["tool_call_id"] = msg.ToolCallID
-			} else if msg.ToolName != "" {
-				// Ollama native format uses tool_name instead of tool_call_id
-				// Generate a synthetic ID based on the tool name for OpenAI compatibility
-				openAIMsg["tool_call_id"] = fmt.Sprintf("call_%s_%d", msg.ToolName, i)
+			toolCallID := msg.ToolCallID
+			if toolCallID != "" {
+				// Explicit ID: consume the matching pending call so a later
+				// identifier-less response in this round can't re-use it.
+				for p := range pendingToolCalls {
+					if pendingToolCalls[p].id == toolCallID {
+						pendingToolCalls[p].consumed = true
+						break
+					}
+				}
 			}
+			if toolCallID == "" && msg.ToolName != "" {
+				// A function name is more information than ordinal position: it
+				// pairs correctly even when responses arrive out of order.
+				for p := range pendingToolCalls {
+					if !pendingToolCalls[p].consumed && pendingToolCalls[p].name == msg.ToolName {
+						toolCallID = pendingToolCalls[p].id
+						pendingToolCalls[p].consumed = true
+						break
+					}
+				}
+			}
+			if toolCallID == "" {
+				// Bind to the first unconsumed pending call by position.
+				for p := range pendingToolCalls {
+					if !pendingToolCalls[p].consumed {
+						toolCallID = pendingToolCalls[p].id
+						pendingToolCalls[p].consumed = true
+						break
+					}
+				}
+			}
+			if toolCallID == "" {
+				if msg.ToolName == "" {
+					// Nothing can bind this response (e.g. it answered a
+					// hallucinated call that was filtered out). A tool message
+					// without tool_call_id is invalid downstream, so drop it.
+					continue
+				}
+				// Named but unmatched: keep it with a synthetic ID.
+				toolCallID = fmt.Sprintf("call_%s_%d", msg.ToolName, i)
+			}
+			openAIMsg["tool_call_id"] = toolCallID
 			if msg.Content == "" {
 				openAIMsg["content"] = "null"
 			}
 		}
 
-		openAIMsgs[i] = openAIMsg
+		openAIMsgs = append(openAIMsgs, openAIMsg)
 	}
 	return openAIMsgs
 }
@@ -1577,7 +1635,7 @@ func validateToolRequest(req *OllamaChatRequest) error {
 	// Validate messages - be lenient for compatibility with various clients
 	// and to handle models that hallucinate invalid tool calls
 	//
-	// First pass: filter out invalid tool calls with empty function names
+	// Filter out invalid tool calls with empty function names
 	for i, msg := range req.Messages {
 		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
 			validToolCalls := make([]OllamaToolCall, 0, len(msg.ToolCalls))
@@ -1592,17 +1650,8 @@ func validateToolRequest(req *OllamaChatRequest) error {
 		}
 	}
 
-	// Second pass: filter out tool response messages that have empty tool_name
-	// These correspond to the hallucinated tool calls we filtered above
-	validMessages := make([]OllamaMessage, 0, len(req.Messages))
-	for _, msg := range req.Messages {
-		// Skip tool responses with empty identifiers (responses to hallucinated tool calls)
-		if msg.Role == "tool" && msg.ToolCallID == "" && msg.ToolName == "" {
-			continue // Skip this message entirely
-		}
-		validMessages = append(validMessages, msg)
-	}
-	req.Messages = validMessages
+	// Tool responses without identifiers are bound to pending tool calls in
+	// ollamaMessagesToOpenAI; unbindable ones are dropped there.
 
 	return nil
 }

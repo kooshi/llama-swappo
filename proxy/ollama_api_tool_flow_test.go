@@ -575,6 +575,90 @@ func TestZedStyleToolCalls(t *testing.T) {
 		assert.Equal(t, http.StatusOK, w.Code, "Response body: %s", w.Body.String())
 	})
 
+	t.Run("ToolResponseWithoutIdentifiers", func(t *testing.T) {
+		// Some clients send tool responses without tool_name or tool_call_id
+		// These should be matched to pending tool calls by position
+		rawJSON := `{
+			"model": "test-model",
+			"stream": false,
+			"messages": [
+				{"role": "user", "content": "what directory?"},
+				{
+					"role": "assistant",
+					"content": "",
+					"tool_calls": [
+						{"id": "call_abc", "type": "function", "function": {"name": "bash", "arguments": {"command": "pwd"}}}
+					]
+				},
+				{"role": "tool", "content": "/home/user"}
+			],
+			"tools": [
+				{
+					"type": "function",
+					"function": {
+						"name": "bash",
+						"description": "Run command",
+						"parameters": {"type": "object", "properties": {"command": {"type": "string"}}}
+					}
+				}
+			]
+		}`
+
+		httpReq := httptest.NewRequest("POST", "/api/chat", bytes.NewBufferString(rawJSON))
+		httpReq.Header.Set("Content-Type", "application/json")
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httpReq
+
+		pm.ollamaChatHandler()(c)
+
+		// Should succeed - tool response matched to pending tool call by position
+		assert.Equal(t, http.StatusOK, w.Code, "Response body: %s", w.Body.String())
+	})
+
+	t.Run("MultipleToolResponsesWithoutIdentifiers", func(t *testing.T) {
+		// Multiple tool calls and responses without explicit identifiers
+		rawJSON := `{
+			"model": "test-model",
+			"stream": false,
+			"messages": [
+				{"role": "user", "content": "check directory and list files"},
+				{
+					"role": "assistant",
+					"content": "",
+					"tool_calls": [
+						{"id": "call_1", "type": "function", "function": {"name": "bash", "arguments": {"command": "pwd"}}},
+						{"id": "call_2", "type": "function", "function": {"name": "bash", "arguments": {"command": "ls"}}}
+					]
+				},
+				{"role": "tool", "content": "/home/user"},
+				{"role": "tool", "content": "file1.txt\nfile2.txt"}
+			],
+			"tools": [
+				{
+					"type": "function",
+					"function": {
+						"name": "bash",
+						"description": "Run command",
+						"parameters": {"type": "object", "properties": {"command": {"type": "string"}}}
+					}
+				}
+			]
+		}`
+
+		httpReq := httptest.NewRequest("POST", "/api/chat", bytes.NewBufferString(rawJSON))
+		httpReq.Header.Set("Content-Type", "application/json")
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httpReq
+
+		pm.ollamaChatHandler()(c)
+
+		// Should succeed - tool responses matched to pending tool calls by position
+		assert.Equal(t, http.StatusOK, w.Code, "Response body: %s", w.Body.String())
+	})
 }
 
 // TestStreamingToolCallAccumulation tests that tool calls streamed incrementally
